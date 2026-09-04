@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Claim pipeline · Sequence</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{--paper:#f5f5f5;--ink:#2d3142;--muted:#4f5d75;--accent:#eb6c36;
+        --sans:'Geist',system-ui,sans-serif;--serif:'Instrument Serif',serif;--mono:'Geist Mono',ui-monospace,monospace}
+  body{font-family:var(--sans);background:var(--paper);color:var(--ink);display:flex;align-items:center;justify-content:center;padding:3rem 2rem}
+  .frame{max-width:1200px;width:100%}
+  .eyebrow{font-family:var(--mono);font-size:.66rem;font-weight:500;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
+  h1{font-family:var(--serif);font-size:2rem;font-weight:400;letter-spacing:-.02em;margin-bottom:1.5rem}
+  svg{width:100%;min-width:900px;display:block}
+</style>
+</head>
+<body>
+<div class="frame">
+  <p class="eyebrow">Sequence · End-to-end flow</p>
+  <h1>Claim ingestion → evaluation → routing</h1>
+
+  <svg viewBox="0 0 1200 840" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+      <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+      <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+    </defs>
+
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+    <!-- lifelines -->
+    <line x1="92"  y1="112" x2="92"  y2="720" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="280" y1="112" x2="280" y2="720" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="468" y1="112" x2="468" y2="720" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="656" y1="112" x2="656" y2="720" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="844" y1="112" x2="844" y2="720" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+
+    <!-- activation bars -->
+    <rect x="276" y="176" width="8" height="272" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="840" y="472" width="8" height="200" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+
+    <!-- messages -->
+    <line x1="92"  y1="176" x2="272" y2="176" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+    <line x1="276" y1="216" x2="96"  y2="216" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="92"  y1="248" x2="272" y2="248" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+    <path d="M 284 288 H 328 V 312 H 288" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="284" y1="344" x2="464" y2="344" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="468" y1="376" x2="288" y2="376" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+    <path d="M 284 408 H 328 V 432 H 288" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="284" y1="448" x2="652" y2="448" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="656" y1="472" x2="836" y2="472" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="848" y1="512" x2="960" y2="512" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+    <line x1="964" y1="544" x2="852" y2="544" stroke="#eb6c36" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-accent)"/>
+    <path d="M 848 584 H 892 V 608 H 852" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="848" y1="640" x2="960" y2="640" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+    <line x1="840" y1="672" x2="472" y2="672" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+    <!-- message labels -->
+    <rect x="96"  y="156" width="180" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="186" y="167" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">POST /v1/events/s3</text>
+    <rect x="112" y="196" width="148" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="186" y="207" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">UC-01 GET OBJECT</text>
+    <rect x="120" y="228" width="132" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="186" y="239" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PDF BYTES</text>
+    <text x="340" y="292" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">UC-01 EXTRACT TEXT (pypdf)</text>
+    <text x="340" y="308" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">UC-02 REDACT PII (presidio) · ADR-001</text>
+    <rect x="304" y="324" width="140" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="374" y="335" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">UC-03 GET POLICIES</text>
+    <rect x="288" y="356" width="172" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="374" y="367" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">POLICIES · NONE = 422 FAIL</text>
+    <text x="340" y="424" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">UC-04 DETERMINISTIC CHECKS · ADR-002</text>
+    <rect x="380" y="428" width="176" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="468" y="439" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">UC-05 PUBLISH claims.evaluate</text>
+    <rect x="676" y="452" width="140" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="746" y="463" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">DELIVER · ACK</text>
+    <rect x="856" y="492" width="112" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="912" y="503" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">UC-06 EVALUATE</text>
+    <rect x="856" y="524" width="112" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="912" y="535" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">VERDICT · CONF</text>
+    <text x="904" y="588" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">UC-07 ROUTE · THRESHOLD 0.85 · ADR-003</text>
+    <rect x="848" y="620" width="128" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="912" y="631" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">UC-08 CONF ≥ 0.85</text>
+    <rect x="576" y="652" width="180" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="666" y="663" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">UC-09 CONF &lt; 0.85 · REVIEW</text>
+
+    <!-- actors -->
+    <rect x="12"  y="60" width="160" height="52" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+    <text x="92"  y="88"  fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">MinIO</text>
+    <text x="92"  y="104" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">tenants/{t}/claims</text>
+
+    <rect x="200" y="60" width="160" height="52" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="280" y="88"  fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">API</text>
+    <text x="280" y="104" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">interfaces.api</text>
+
+    <rect x="388" y="60" width="160" height="52" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+    <text x="468" y="88"  fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Postgres</text>
+    <text x="468" y="104" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">claims · policies</text>
+
+    <rect x="576" y="60" width="160" height="52" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+    <text x="656" y="88"  fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">RabbitMQ</text>
+    <text x="656" y="104" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">claims.evaluate</text>
+
+    <rect x="764" y="60" width="160" height="52" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="844" y="88"  fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Worker</text>
+    <text x="844" y="104" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">interfaces.worker</text>
+
+    <!-- external endpoints -->
+    <rect x="964" y="488" width="200" height="48" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+    <text x="1064" y="512" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">LLM Gateway</text>
+    <text x="1064" y="528" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">vendor adapter · ADR-004</text>
+
+    <rect x="964" y="616" width="200" height="48" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+    <text x="1064" y="640" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Client webhook</text>
+    <text x="1064" y="656" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">hmac-sha256 · 3 retries</text>
+
+    <!-- legend -->
+    <line x1="32" y1="756" x2="1168" y2="756" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="32" y="780" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+    <line x1="120" y1="776" x2="160" y2="776" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <text x="168" y="780" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace">INTERNAL CALL</text>
+    <line x1="308" y1="776" x2="348" y2="776" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+    <text x="356" y="780" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace">RETURN</text>
+    <line x1="452" y1="776" x2="492" y2="776" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+    <text x="500" y="780" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace">HTTP INBOUND</text>
+    <line x1="640" y1="776" x2="680" y2="776" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+    <text x="688" y="780" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace">EXTERNAL / DECISION PATH</text>
+    <rect x="900" y="768" width="8" height="12" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <text x="916" y="780" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace">ACTIVATION</text>
+  </svg>
+</div>
+</body>
+</html>
