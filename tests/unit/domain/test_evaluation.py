@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from ecet.domain.errors import ReviewAlreadyResolved
+from ecet.domain.errors import InvalidReviewResolution, ReviewAlreadyResolved
 from ecet.domain.evaluation import (
     CheckOutcome,
     Decision,
@@ -131,7 +131,7 @@ def test_resolving_twice_raises() -> None:
 
 def test_a_human_may_not_resolve_as_insufficient_evidence() -> None:
     task = build_task()
-    with pytest.raises(ValueError, match="MEETS_NECESSITY"):
+    with pytest.raises(InvalidReviewResolution, match="MEETS_NECESSITY"):
         task.resolve(
             resolution=Decision.INSUFFICIENT_EVIDENCE,
             reviewer="a",
@@ -139,3 +139,5 @@ def test_a_human_may_not_resolve_as_insufficient_evidence() -> None:
             now=NOW,
         )
     assert task.status is ReviewStatus.OPEN
+    assert task.resolution is None
+    assert task.resolved_at is None

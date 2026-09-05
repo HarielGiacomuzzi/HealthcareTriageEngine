@@ -6,7 +6,14 @@ Read-only in v1 — policies are seeded, not managed through the API.
 from datetime import date
 from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from ecet.domain.ids import PolicyId, TenantIdField
 
@@ -42,7 +49,8 @@ class Policy(BaseModel):
     version: int = Field(ge=1)
     covered_codes: set[Icd10Code] = Field(default_factory=set)
     excluded_codes: set[Icd10Code] = Field(default_factory=set)
-    criteria_text: str = Field(min_length=1)
+    # Stripped: a whitespace-only criteria block renders as an empty policy in the prompt.
+    criteria_text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     required_evidence: list[str] = Field(default_factory=list)
     active: bool = True
     effective_from: date

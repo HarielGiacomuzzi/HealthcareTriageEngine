@@ -5,10 +5,23 @@ the lifecycle every other component reads and advances.
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
-from ecet.domain.errors import InvalidObjectKey, InvalidTransition, PdfTooLarge
+from ecet.domain.errors import (
+    InvalidObjectKey,
+    InvalidTransition,
+    PdfTooLarge,
+    TenantMismatch,
+)
 from ecet.domain.evaluation import DeterministicResult, Evaluation
 from ecet.domain.ids import TENANT_ID_BODY, ClaimId, PolicyId, TenantId, TenantIdField
 
@@ -105,9 +118,14 @@ _ALLOWED: dict[ClaimStatus, frozenset[ClaimStatus]] = {
     # POLICIES_ATTACHED -> REVIEW_PENDING is the ADR-002 deterministic short-circuit.
     ClaimStatus.POLICIES_ATTACHED: frozenset({ClaimStatus.QUEUED, ClaimStatus.REVIEW_PENDING}),
     ClaimStatus.QUEUED: frozenset({ClaimStatus.EVALUATED, ClaimStatus.EVALUATION_FAILED}),
-    ClaimStatus.EVALUATED: frozenset({ClaimStatus.APPROVED_AUTO, ClaimStatus.REVIEW_PENDING}),
+    # EVALUATED/REVIEW_PENDING -> NOTIFY_FAILED: delivery failed before the claim ever
+    # reached APPROVED_AUTO/REVIEW_RESOLVED, which both mean "webhook delivered"
+    # (UC-07 step 2, UC-09c step 4).
+    ClaimStatus.EVALUATED: frozenset(
+        {ClaimStatus.APPROVED_AUTO, ClaimStatus.REVIEW_PENDING, ClaimStatus.NOTIFY_FAILED}
+    ),
     ClaimStatus.APPROVED_AUTO: frozenset({ClaimStatus.NOTIFY_FAILED}),
-    ClaimStatus.REVIEW_PENDING: frozenset({ClaimStatus.REVIEW_RESOLVED}),
+    ClaimStatus.REVIEW_PENDING: frozenset({ClaimStatus.REVIEW_RESOLVED, ClaimStatus.NOTIFY_FAILED}),
     ClaimStatus.REVIEW_RESOLVED: frozenset({ClaimStatus.NOTIFY_FAILED}),
     # Operator retry: POST /v1/claims/{id}/retry-notify.
     ClaimStatus.NOTIFY_FAILED: frozenset({ClaimStatus.APPROVED_AUTO, ClaimStatus.REVIEW_RESOLVED}),
@@ -137,6 +155,16 @@ class Claim(BaseModel):
     created_at: AwareDatetime
     updated_at: AwareDatetime
 
+    @model_validator(mode="after")
+    def _tenant_matches_the_object_key(self) -> Self:
+        """Repositories filter on `tenant_id`, object storage reads by key — a mismatch
+        is an undetectable cross-tenant read."""
+        if self.tenant_id != self.source.tenant_id():
+            raise TenantMismatch(
+                f"claim tenant {self.tenant_id!r} != key tenant {self.source.tenant_id()!r}"
+            )
+        return self
+
     def transition(
         self,
         nxt: ClaimStatus,
@@ -148,9 +176,9 @@ class Claim(BaseModel):
         failure state with no reason. Every transition bumps `updated_at`."""
         if not self.status.can_transition_to(nxt):
             raise InvalidTransition(f"{self.status} -> {nxt} is not an allowed transition")
-        if nxt in FAILURE_STATUSES and not reason:
+        if nxt in FAILURE_STATUSES and not (reason or "").strip():
             raise InvalidTransition(f"transition to {nxt} requires a reason")
         self.status = nxt
-        if reason is not None:
-            self.failure_reason = reason
+        # A non-failure status is a recovery: the old reason no longer describes the claim.
+        self.failure_reason = reason if nxt in FAILURE_STATUSES else None
         self.updated_at = now if now is not None else datetime.now(UTC)

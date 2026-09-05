@@ -139,3 +139,13 @@ def test_aggregation_precedence(failed: list[str], expected: Verdict) -> None:
     names = ["non_empty_text", "icd10_present", "excluded_code_hit", "covered_code_hit"]
     checks = [CheckOutcome(name=name, passed=name not in failed, detail="") for name in names]
     assert aggregate(checks) is expected
+
+
+def test_clinical_prose_produces_false_positive_codes() -> None:
+    """Documents the ceiling: pattern-only matching, no ICD-10 dictionary.
+
+    `T12` is a vertebra named in nearly every lumbar-spine MRI report. Fixing this
+    needs the seeded ICD-10 code set (Phase 2) to validate against.
+    """
+    found = extract_icd10_codes("Vitamin B12 low. T12 vertebral body.")
+    assert [item.code for item in found] == ["B12", "T12"]

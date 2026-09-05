@@ -13,6 +13,14 @@ class InvalidTransition(DomainError):
     """Claim status transition is not allowed from the current status."""
 
 
+class TenantMismatch(DomainError):
+    """Claim `tenant_id` disagrees with the tenant segment of its source object key."""
+
+
+class InvalidReviewResolution(DomainError):
+    """A human resolution must be `MEETS_NECESSITY` or `DOES_NOT_MEET`."""
+
+
 class PdfTooLarge(DomainError):
     """Source object is larger than the configured `max_pdf_bytes`."""
 

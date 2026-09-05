@@ -92,6 +92,16 @@ class FakeReviewTaskRepository:
         except KeyError:
             raise ReviewTaskNotFound(str(task_id)) from None
 
+    async def find_open_by_claim(self, claim_id: ClaimId) -> ReviewTask | None:
+        return next(
+            (
+                task
+                for task in self.tasks.values()
+                if task.claim_id == claim_id and task.status is ReviewStatus.OPEN
+            ),
+            None,
+        )
+
     async def list_open(self, tenant_id: TenantId, limit: int = 50) -> list[ReviewTask]:
         return [
             task

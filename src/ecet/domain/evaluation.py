@@ -7,12 +7,12 @@ what the cheap rules concluded (`DeterministicResult`), what the LLM concluded
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, get_args
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from ecet.domain.errors import ReviewAlreadyResolved
+from ecet.domain.errors import InvalidReviewResolution, ReviewAlreadyResolved
 from ecet.domain.ids import ClaimId, PolicyId, TenantIdField
 from ecet.domain.policy import Icd10Code
 
@@ -101,6 +101,9 @@ class ReviewStatus(StrEnum):
 
 HumanResolution = Literal[Decision.MEETS_NECESSITY, Decision.DOES_NOT_MEET]
 
+#: The same set at runtime — the Literal is only a static guarantee.
+_HUMAN_RESOLUTIONS: frozenset[Decision] = frozenset(get_args(HumanResolution))
+
 
 class ReviewTask(BaseModel):
     """Human-in-the-loop work item. One open task per claim."""
@@ -121,7 +124,7 @@ class ReviewTask(BaseModel):
     def resolve(
         self,
         *,
-        resolution: Decision,
+        resolution: HumanResolution,
         reviewer: str,
         notes: str | None,
         now: datetime,
@@ -129,8 +132,8 @@ class ReviewTask(BaseModel):
         """Record a human decision. `now` is injected — the domain owns no clock."""
         if self.status is ReviewStatus.RESOLVED:
             raise ReviewAlreadyResolved(str(self.id))
-        if resolution is Decision.INSUFFICIENT_EVIDENCE:
-            raise ValueError("resolution must be MEETS_NECESSITY or DOES_NOT_MEET")
+        if resolution not in _HUMAN_RESOLUTIONS:
+            raise InvalidReviewResolution("resolution must be MEETS_NECESSITY or DOES_NOT_MEET")
         self.resolution = resolution
         self.reviewer = reviewer
         self.notes = notes

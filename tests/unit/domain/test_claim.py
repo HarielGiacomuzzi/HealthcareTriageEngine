@@ -5,8 +5,20 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from ecet.domain.claim import Claim, ClaimStatus, RedactedText, SourceObject
-from ecet.domain.errors import InvalidObjectKey, InvalidTransition, PdfTooLarge
+from ecet.domain.claim import (
+    _ALLOWED,
+    FAILURE_STATUSES,
+    Claim,
+    ClaimStatus,
+    RedactedText,
+    SourceObject,
+)
+from ecet.domain.errors import (
+    InvalidObjectKey,
+    InvalidTransition,
+    PdfTooLarge,
+    TenantMismatch,
+)
 from ecet.domain.evaluation import CheckOutcome, DeterministicResult, Verdict
 from ecet.domain.ids import ClaimId
 
@@ -154,3 +166,61 @@ def test_claim_json_round_trip_is_stable() -> None:
 def test_naive_timestamps_are_rejected() -> None:
     with pytest.raises(ValidationError):
         build_claim(created_at=datetime(2026, 9, 5, 12, 0))
+
+
+@pytest.mark.parametrize(
+    "status",
+    [ClaimStatus.EVALUATED, ClaimStatus.REVIEW_PENDING],
+)
+def test_notify_failure_is_reachable_from_evaluated_and_review_pending(
+    status: ClaimStatus,
+) -> None:
+    """UC-07 step 2 and UC-09c step 4: delivery failure after retries."""
+    claim = build_claim(status=status)
+    claim.transition(ClaimStatus.NOTIFY_FAILED, reason="webhook 500", now=LATER)
+    assert claim.status is ClaimStatus.NOTIFY_FAILED
+
+
+def test_every_allowed_edge_survives_a_real_transition() -> None:
+    """Regression guard: the `_ALLOWED` table is only true if `transition()` agrees."""
+    for source, targets in _ALLOWED.items():
+        for target in targets:
+            claim = build_claim(status=source)
+            reason = "boom" if target in FAILURE_STATUSES else None
+            claim.transition(target, reason=reason, now=LATER)
+            assert claim.status is target
+
+
+@pytest.mark.parametrize(
+    ("source", "target"),
+    [
+        (ClaimStatus.RECEIVED, ClaimStatus.REDACTED),
+        (ClaimStatus.EXTRACTED, ClaimStatus.EVALUATED),
+        (ClaimStatus.QUEUED, ClaimStatus.APPROVED_AUTO),
+        (ClaimStatus.APPROVED_AUTO, ClaimStatus.REVIEW_PENDING),
+        (ClaimStatus.REVIEW_RESOLVED, ClaimStatus.APPROVED_AUTO),
+        (ClaimStatus.NO_POLICIES, ClaimStatus.POLICIES_ATTACHED),
+    ],
+)
+def test_non_edges_raise(source: ClaimStatus, target: ClaimStatus) -> None:
+    claim = build_claim(status=source)
+    with pytest.raises(InvalidTransition):
+        claim.transition(target, reason="boom", now=LATER)
+
+
+def test_tenant_id_must_match_the_tenant_segment_of_the_key() -> None:
+    with pytest.raises(TenantMismatch):
+        build_claim(tenant_id="tenant-b")
+
+
+def test_failure_reason_is_cleared_when_the_claim_recovers() -> None:
+    claim = build_claim(status=ClaimStatus.NOTIFY_FAILED, failure_reason="webhook 500")
+    claim.transition(ClaimStatus.APPROVED_AUTO, now=LATER)
+    assert claim.failure_reason is None
+
+
+def test_a_whitespace_only_reason_is_not_a_reason() -> None:
+    claim = build_claim()
+    with pytest.raises(InvalidTransition, match="reason"):
+        claim.transition(ClaimStatus.EXTRACTION_FAILED, reason="   ", now=LATER)
+    assert claim.status is ClaimStatus.RECEIVED

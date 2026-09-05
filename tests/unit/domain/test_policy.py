@@ -59,6 +59,12 @@ def test_criteria_text_must_be_present() -> None:
         build_policy(criteria_text="")
 
 
+def test_whitespace_only_criteria_text_is_rejected() -> None:
+    """It would render as an empty policy block in the LLM prompt."""
+    with pytest.raises(ValidationError):
+        build_policy(criteria_text="   ")
+
+
 def test_version_starts_at_one() -> None:
     with pytest.raises(ValidationError):
         build_policy(version=0)

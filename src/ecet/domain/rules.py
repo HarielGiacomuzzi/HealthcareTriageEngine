@@ -16,6 +16,8 @@ MIN_TEXT_CHARS = 50
 
 #: Word-bounded, case-insensitive ICD-10 token. Same shape as `ICD10_PATTERN`,
 #: unanchored so it can be searched inside prose.
+# ponytail: pattern-only match, no code dictionary — "Vitamin B12" and the "T12" vertebra
+# both read as codes. Validate against seeded ICD-10 codes once Phase 2 lands them.
 ICD10_TOKEN_RE = re.compile(r"\b[A-TV-Z][0-9][0-9A-Z](?:\.[0-9A-Z]{1,4})?\b", re.IGNORECASE)
 
 #: What a failing rule means for the overall verdict.

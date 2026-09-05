@@ -148,3 +148,24 @@ async def test_review_task_repository_lists_only_open_tasks_for_the_tenant() -> 
 
     with pytest.raises(ReviewTaskNotFound):
         await repo.get(uuid4())
+
+
+async def test_review_task_repository_finds_the_open_task_for_a_claim() -> None:
+    """UC-09a idempotency: an existing OPEN task is found without scanning `list_open`."""
+    repo = FakeReviewTaskRepository()
+    claim_id = ClaimId(uuid4())
+    task = ReviewTask(
+        id=uuid4(),
+        claim_id=claim_id,
+        tenant_id=TENANT,
+        reason=ReviewReason.LOW_CONFIDENCE,
+        created_at=NOW,
+    )
+    await repo.add(task)
+
+    assert await repo.find_open_by_claim(claim_id) == task
+    assert await repo.find_open_by_claim(ClaimId(uuid4())) is None
+
+    task.status = ReviewStatus.RESOLVED
+    await repo.save(task)
+    assert await repo.find_open_by_claim(claim_id) is None
