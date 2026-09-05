@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck imports test check up down clean logs ps
+.PHONY: install lint format typecheck imports test check hooks up down clean logs ps
 
 install:
 	uv sync
@@ -23,6 +23,8 @@ test:
 
 check: lint typecheck imports test
 
+hooks:
+	uv run pre-commit install
 
 .env: | .env.example
 	cp .env.example $@
