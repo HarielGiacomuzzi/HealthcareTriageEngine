@@ -25,6 +25,7 @@ Specs: [claim](01-domain/claim.md), [policy](01-domain/policy.md), [evaluation](
 - Alembic migrations, ORM, mappers, repositories, UnitOfWork, seed data, `ecet seed`.
 - Adapter tests with testcontainers.
 - Carried from Phase 0: testcontainers dependency and the CI `slow` job (`pytest -m slow`) that runs it.
+- Carried from Phase 1: optimistic saves need the pre-mutation `updated_at` that [postgres](03-infrastructure/postgres.md)'s `UPDATE … WHERE updated_at=?` compares against — `Claim.transition()` overwrites it in place and `Claim` has no `version` field, so the adapter must carry it (SQLAlchemy identity map or `version_id_col`); deliberately not solved in the domain, because the schema has no version column. `Tenant.webhook_secret` must be persisted via `get_secret_value()` — the JSON dump masks it. Seed the ICD-10 code set that Phase 4 validates extracted codes against.
 Done when: seed loads 3 tenants; repository round-trips pass.
 Specs: [postgres](03-infrastructure/postgres.md), [tenant seed](01-domain/tenant.md#4-seed).
 
@@ -34,6 +35,7 @@ Specs: [postgres](03-infrastructure/postgres.md), [tenant seed](01-domain/tenant
 - FastAPI app: `/v1/events/s3`, `/v1/claims/ingest`, `/v1/claims/{id}`, `/readyz`, error mapping.
 - MinIO webhook wiring in compose (`minio-setup`).
 - Carried from Phase 0: spaCy `en_core_web_lg` download + `SPACY_MODEL` build arg in the Dockerfile; `minio-setup` compose service; api container healthcheck switched from `/healthz` to `/readyz`; `assert_no_pii` test helper + `tests/fixtures/` (notes, pdfs, s3_events) from the [testing spec](05-platform/testing.md); adapters must log through structlog only (see Phase 6 carry-over #12).
+- Carried from Phase 1: the error mapping must not echo `InvalidObjectKey`'s message to clients verbatim — it embeds the client-supplied filename.
 Done when: dropping fixture PDF in bucket → claim `QUEUED` in DB and message in queue; `tenant-empty` → 422.
 Specs: [UC-01](02-use-cases/UC-01-ingest-claim-document.md)–[UC-05](02-use-cases/UC-05-enqueue-evaluation.md), [object-storage-minio](03-infrastructure/object-storage-minio.md), [pdf-text-extractor](03-infrastructure/pdf-text-extractor.md), [pii-redactor-presidio](03-infrastructure/pii-redactor-presidio.md), [queue-rabbitmq](03-infrastructure/queue-rabbitmq.md), [api](04-interfaces/api.md).
 
@@ -42,6 +44,7 @@ Specs: [UC-01](02-use-cases/UC-01-ingest-claim-document.md)–[UC-05](02-use-cas
 - [UC-06](02-use-cases/UC-06-evaluate-claim.md) / [UC-07](02-use-cases/UC-07-route-decision.md) / [UC-08](02-use-cases/UC-08-notify-client.md) / [UC-09a](02-use-cases/UC-09-human-review.md#uc-09a-requesthumanreview); webhook httpx client; mock-client service.
 - Worker consumer, ack/nack classification, DLQ, graceful shutdown.
 - Carried from Phase 0: `mock-client` compose service (`services/mock-client/`, own Dockerfile).
+- Carried from Phase 1: ICD-10 extraction in `domain/rules.py` is pattern-only and false-positives on clinical prose ("Vitamin B12", the "T12" vertebra); validate extracted codes against the ICD-10 set seeded in Phase 2.
 Done when: full loop `PDF drop → webhook received by mock-client` with fake LLM; low-confidence note → `REVIEW_PENDING`.
 Specs: [UC-06](02-use-cases/UC-06-evaluate-claim.md)–[UC-09](02-use-cases/UC-09-human-review.md), [llm-gateway](03-infrastructure/llm-gateway.md), [webhook-client](03-infrastructure/webhook-client.md), [queue-rabbitmq](03-infrastructure/queue-rabbitmq.md), [worker](04-interfaces/worker.md).
 
@@ -81,6 +84,22 @@ Every deferral recorded in [`docs/plans/2026-09-04-phase-0-skeleton-tooling.md`]
 | — | testcontainers + CI `slow` job | Phase 2 |
 | — | CI `e2e` job | Phase 6 |
 | — | `tests/fakes.py`, `assert_no_pii`, `tests/fixtures/` from the [testing spec](05-platform/testing.md) | Phase 1 (repository fakes) / Phase 3 (the rest) |
+
+## Carried over from Phase 1
+
+Every deferral recorded in [`docs/plans/2026-09-05-phase-1-domain-core.md`](../docs/plans/2026-09-05-phase-1-domain-core.md#deviations-from-spec-record-in-the-pr-description), with the phase that closes it. Each is also listed inline in its phase above.
+
+| # | Deferred in Phase 1 | Closed by |
+|---|---------------------|-----------|
+| 1 | Optimistic save needs the pre-mutation `updated_at`; `transition()` overwrites it and `Claim` has no `version` field — the adapter must carry it (identity map / `version_id_col`) | Phase 2 — not solvable in the domain, the schema has no version column |
+| 2 | `Tenant.webhook_secret` is a `SecretStr`; persistence must use `get_secret_value()`, the model dump masks it | Phase 2 |
+| 3 | ICD-10 extraction is pattern-only and false-positives on clinical prose (`B12`, `T12`); needs validation against a real code set | Phase 2 (seed the codes) / Phase 4 (validate against them) |
+| 4 | `InvalidObjectKey`'s message embeds the client-supplied filename; the API error mapping must not echo it verbatim | Phase 3 |
+| 5 | `TenantIdField` applies `StringConstraints` to a `NewType`; pydantic-version-fragile, fallback documented in the plan | accepted, permanent |
+| 6 | `Policy` is `frozen=True`, which does not prevent in-place mutation of its `set`/`list` fields | accepted, permanent |
+| 7 | `rules.aggregate()` raises `KeyError` on a check name outside `_VERDICT_ON_FAIL` | accepted — the four names are internal to `run_checks` |
+| 8 | `limit` is keyword-only on `ClaimRepository.list_by_status` but positional on `ReviewTaskRepository.list_open` | accepted — each matches its own spec |
+| 9 | `ReviewTaskNotFound`'s docstring promises a tenant scope that `get(task_id)` cannot enforce | accepted — [UC-09c](02-use-cases/UC-09-human-review.md#uc-09c-resolvereview) has the same gap; the use case checks the tenant |
 
 ## Deferred (explicitly out of v1)
 - OCR for scanned PDFs.
