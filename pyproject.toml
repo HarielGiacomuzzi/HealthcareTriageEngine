@@ -96,4 +96,5 @@ forbidden_modules = [
     "openai",
     "presidio_analyzer",
     "presidio_anonymizer",
+    "ecet.config",
 ]
