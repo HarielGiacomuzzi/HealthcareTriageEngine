@@ -94,6 +94,14 @@ async def test_policy_repository_filters_on_effectiveness() -> None:
     assert await repo.get_many([active.id]) == [active]
 
 
+async def test_policy_repository_keeps_only_the_highest_version_per_name() -> None:
+    v1 = build_policy(version=1)
+    v2 = build_policy(id=PolicyId(uuid4()), version=2)
+    repo = FakePolicyRepository([v1, v2])
+
+    assert await repo.active_for_tenant(TENANT, on=date(2026, 6, 1)) == [v2]
+
+
 async def test_tenant_repository_round_trip() -> None:
     tenant = Tenant(
         id=TENANT,
@@ -105,6 +113,19 @@ async def test_tenant_repository_round_trip() -> None:
     assert await repo.get(TENANT) == tenant
     with pytest.raises(TenantNotFound):
         await repo.get(TenantId("nope"))
+
+
+async def test_tenant_repository_raises_for_inactive_tenant() -> None:
+    tenant = Tenant(
+        id=TENANT,
+        name="Tenant A",
+        webhook_url="http://mock-client:9000/hooks/ecet",
+        webhook_secret=SecretStr("s3cret"),
+        active=False,
+    )
+    repo = FakeTenantRepository([tenant])
+    with pytest.raises(TenantNotFound):
+        await repo.get(TENANT)
 
 
 async def test_review_task_repository_lists_only_open_tasks_for_the_tenant() -> None:
