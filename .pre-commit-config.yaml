@@ -1,0 +1,37 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.6  # must match the ruff version uv.lock resolves
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: mypy-strict
+        name: mypy --strict (domain, application)
+        entry: uv run mypy --strict src/ecet/domain src/ecet/application
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: mypy
+        name: mypy (src/ecet)
+        entry: uv run mypy src/ecet
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: lint-imports
+        name: import-linter contracts
+        entry: uv run lint-imports
+        language: system
+        types: [python]
+        pass_filenames: false

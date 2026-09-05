@@ -44,7 +44,17 @@ Full ADR list (001–007) and the end-to-end flow: [specs/00-overview.md](specs/
 
 ## 4. Quickstart (Under 2 Minutes)
 
-git clone https://github.com/yourusername/claims-triage-engine.git
-cd claims-triage-engine
-cp .env.example .env
-docker compose up --build
+Prerequisites: Python 3.12, [uv](https://docs.astral.sh/uv/), and Docker (with Compose).
+
+```bash
+git clone https://github.com/HarielGiacomuzzi/HealthcareTriageEngine.git
+cd HealthcareTriageEngine
+
+make install   # uv sync
+make check     # lint, typecheck, import contracts, tests (or: make test)
+
+make up        # copies .env.example -> .env, builds and starts the compose stack
+curl -sf localhost:8000/healthz && echo
+
+make down      # stop the stack
+```
