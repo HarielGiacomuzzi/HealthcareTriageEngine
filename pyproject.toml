@@ -13,6 +13,9 @@ dependencies = [
     "structlog>=24.4,<26",
 ]
 
+[project.scripts]
+ecet = "ecet.cli:app"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3,<9",
