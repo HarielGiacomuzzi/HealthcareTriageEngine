@@ -57,6 +57,7 @@ testpaths = ["tests"]
 addopts = "-q -m 'not slow and not e2e'"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]
 markers = [
     "slow: needs docker / testcontainers",
     "e2e: needs the full compose stack",
@@ -64,6 +65,12 @@ markers = [
 
 [tool.coverage.run]
 source = ["ecet"]
+
+[tool.coverage.report]
+exclude_also = [
+    '^\s*\.\.\.$',
+    'if TYPE_CHECKING:',
+]
 
 [tool.importlinter]
 root_package = "ecet"
