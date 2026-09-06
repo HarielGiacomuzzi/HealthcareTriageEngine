@@ -22,11 +22,13 @@ Done when: domain tests green; no I/O deps.
 Specs: [claim](01-domain/claim.md), [policy](01-domain/policy.md), [evaluation](01-domain/evaluation.md), [tenant](01-domain/tenant.md).
 
 ## Phase 2 — Persistence
-- Alembic migrations, ORM, mappers, repositories, UnitOfWork, seed data, `ecet seed`.
+Plan: [`docs/plans/2026-09-06-phase-2-persistence.md`](../docs/plans/2026-09-06-phase-2-persistence.md).
+- Alembic migrations, ORM rows, pure mappers, the four repositories, `UnitOfWork` (port + SQLAlchemy adapter), dev seed data, `ecet seed`.
+- `icd10_codes` table + `Icd10CodeRepository` port: the catalogue Phase 4 validates extracted codes against.
 - Adapter tests with testcontainers.
 - Carried from Phase 0: testcontainers dependency and the CI `slow` job (`pytest -m slow`) that runs it.
-- Carried from Phase 1: optimistic saves need the pre-mutation `updated_at` that [postgres](03-infrastructure/postgres.md)'s `UPDATE … WHERE updated_at=?` compares against — `Claim.transition()` overwrites it in place and `Claim` has no `version` field, so the adapter must carry it (SQLAlchemy identity map or `version_id_col`); deliberately not solved in the domain, because the schema has no version column. `Tenant.webhook_secret` must be persisted via `get_secret_value()` — the JSON dump masks it. Seed the ICD-10 code set that Phase 4 validates extracted codes against.
-Done when: seed loads 3 tenants; repository round-trips pass.
+- Carried from Phase 1: optimistic saves need the pre-mutation `updated_at` that [postgres](03-infrastructure/postgres.md)'s `UPDATE … WHERE updated_at=?` compares against — `Claim.transition()` overwrites it in place and `Claim` has no `version` field, so the adapter carries it (a per-repository baseline map); deliberately not solved in the domain, because the schema has no version column. `Tenant.webhook_secret` must be persisted via `get_secret_value()` — the JSON dump masks it. `ReviewTaskRepository.find_open_by_claim` maps to the unique `review_tasks.claim_id`. `Claim` rejects a `tenant_id` that disagrees with its object key, so mappers must build both from the same row.
+Done when: `make migrate && make seed` loads 4 tenants (one inactive) and 15 policies; rerunning the seed changes nothing; repository round-trips pass.
 Specs: [postgres](03-infrastructure/postgres.md), [tenant seed](01-domain/tenant.md#4-seed).
 
 ## Phase 3 — Ingestion Path (API side)
@@ -36,6 +38,7 @@ Specs: [postgres](03-infrastructure/postgres.md), [tenant seed](01-domain/tenant
 - MinIO webhook wiring in compose (`minio-setup`).
 - Carried from Phase 0: spaCy `en_core_web_lg` download + `SPACY_MODEL` build arg in the Dockerfile; `minio-setup` compose service; api container healthcheck switched from `/healthz` to `/readyz`; `assert_no_pii` test helper + `tests/fixtures/` (notes, pdfs, s3_events) from the [testing spec](05-platform/testing.md); adapters must log through structlog only (see Phase 6 carry-over #12).
 - Carried from Phase 1: the error mapping must not echo `InvalidObjectKey`'s message to clients verbatim — it embeds the client-supplied filename.
+- Carried from Phase 2: api startup runs `alembic upgrade head` + the seed when `ECET_AUTO_MIGRATE=true` ([docker-compose](05-platform/docker-compose.md)) — Phase 2 shipped the migration, the seed and the `alembic.ini` + `migrations/` copy inside the image, but wired neither into the api process, which had no database yet. The compose `postgres` init-dir seeding path is gone: it runs before the tables exist.
 Done when: dropping fixture PDF in bucket → claim `QUEUED` in DB and message in queue; `tenant-empty` → 422.
 Specs: [UC-01](02-use-cases/UC-01-ingest-claim-document.md)–[UC-05](02-use-cases/UC-05-enqueue-evaluation.md), [object-storage-minio](03-infrastructure/object-storage-minio.md), [pdf-text-extractor](03-infrastructure/pdf-text-extractor.md), [pii-redactor-presidio](03-infrastructure/pii-redactor-presidio.md), [queue-rabbitmq](03-infrastructure/queue-rabbitmq.md), [api](04-interfaces/api.md).
 
@@ -44,7 +47,7 @@ Specs: [UC-01](02-use-cases/UC-01-ingest-claim-document.md)–[UC-05](02-use-cas
 - [UC-06](02-use-cases/UC-06-evaluate-claim.md) / [UC-07](02-use-cases/UC-07-route-decision.md) / [UC-08](02-use-cases/UC-08-notify-client.md) / [UC-09a](02-use-cases/UC-09-human-review.md#uc-09a-requesthumanreview); webhook httpx client; mock-client service.
 - Worker consumer, ack/nack classification, DLQ, graceful shutdown.
 - Carried from Phase 0: `mock-client` compose service (`services/mock-client/`, own Dockerfile).
-- Carried from Phase 1: ICD-10 extraction in `domain/rules.py` is pattern-only and false-positives on clinical prose ("Vitamin B12", the "T12" vertebra); validate extracted codes against the ICD-10 set seeded in Phase 2.
+- Carried from Phase 1: ICD-10 extraction in `domain/rules.py` is pattern-only and false-positives on clinical prose ("Vitamin B12", the "T12" vertebra); validate extracted codes against the catalogue Phase 2 seeded, read through `Icd10CodeRepository.known_codes()`. `T12` is itself a real code, so that one false positive survives — a note mentioning the T12 vertebra still looks like a diagnosis.
 Done when: full loop `PDF drop → webhook received by mock-client` with fake LLM; low-confidence note → `REVIEW_PENDING`.
 Specs: [UC-06](02-use-cases/UC-06-evaluate-claim.md)–[UC-09](02-use-cases/UC-09-human-review.md), [llm-gateway](03-infrastructure/llm-gateway.md), [webhook-client](03-infrastructure/webhook-client.md), [queue-rabbitmq](03-infrastructure/queue-rabbitmq.md), [worker](04-interfaces/worker.md).
 
@@ -93,7 +96,7 @@ Every deferral recorded in [`docs/plans/2026-09-05-phase-1-domain-core.md`](../d
 |---|---------------------|-----------|
 | 1 | Optimistic save needs the pre-mutation `updated_at`; `transition()` overwrites it and `Claim` has no `version` field — the adapter must carry it (identity map / `version_id_col`) | Phase 2 — not solvable in the domain, the schema has no version column |
 | 2 | `Tenant.webhook_secret` is a `SecretStr`; persistence must use `get_secret_value()`, the model dump masks it | Phase 2 |
-| 3 | ICD-10 extraction is pattern-only and false-positives on clinical prose (`B12`, `T12`); needs validation against a real code set | Phase 2 (seed the codes) / Phase 4 (validate against them) |
+| 3 | ICD-10 extraction is pattern-only and false-positives on clinical prose (`B12`, `T12`); needs validation against a real code set | Phase 2 (`icd10_codes` table + `Icd10CodeRepository`) / Phase 4 (validate against them) |
 | 4 | `InvalidObjectKey`'s message embeds the client-supplied filename; the API error mapping must not echo it verbatim | Phase 3 |
 | 5 | `TenantIdField` applies `StringConstraints` to a `NewType`; pydantic-version-fragile, fallback documented in the plan | accepted, permanent |
 | 6 | `Policy` is `frozen=True`, which does not prevent in-place mutation of its `set`/`list` fields | accepted, permanent |
