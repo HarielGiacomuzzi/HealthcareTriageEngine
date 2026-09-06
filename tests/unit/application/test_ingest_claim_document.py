@@ -263,6 +263,10 @@ async def test_a_publish_failure_leaves_the_claim_policies_attached() -> None:
     (stored,) = harness.uow.claims.claims.values()
     assert stored.status is ClaimStatus.POLICIES_ATTACHED
     assert stored.redacted is not None
+    # One commit after `claims.add`, one before `enqueue.execute`; the publish
+    # raises before any third commit — proves the commit happened before publish
+    # was attempted, not merely that the save landed.
+    assert harness.uow.commits == 2
 
 
 async def test_the_claim_carries_the_key_derived_tenant() -> None:
