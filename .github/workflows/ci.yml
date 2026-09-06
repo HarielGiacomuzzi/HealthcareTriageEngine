@@ -36,3 +36,6 @@ jobs:
 
       - name: Tests
         run: uv run pytest --cov=ecet --cov-report=term-missing --cov-fail-under=85
+
+      - name: Domain coverage gate
+        run: uv run coverage report --include='src/ecet/domain/*' --fail-under=95
