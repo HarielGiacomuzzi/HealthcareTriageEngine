@@ -35,7 +35,25 @@ jobs:
         run: uv run lint-imports
 
       - name: Tests
-        run: uv run pytest --cov=ecet --cov-report=term-missing --cov-fail-under=85
+        run: uv run pytest --cov=ecet --cov-report=term-missing
 
       - name: Domain coverage gate
         run: uv run coverage report --include='src/ecet/domain/*' --fail-under=95
+
+  slow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Full suite with adapters (testcontainers)
+        run: uv run pytest -m 'not e2e' --cov=ecet --cov-report=term-missing --cov-fail-under=85
