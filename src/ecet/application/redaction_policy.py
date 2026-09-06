@@ -11,6 +11,7 @@ ENTITY_REPLACEMENTS: dict[str, str] = {
     "PHONE_NUMBER": "<PHONE>",
     "EMAIL_ADDRESS": "<EMAIL>",
     "US_SSN": "<SSN>",
+    "LOCATION": "<LOCATION>",
     "MEDICAL_LICENSE": "<LICENSE>",
     "US_DRIVER_LICENSE": "<ID>",
     "CREDIT_CARD": "<ID>",

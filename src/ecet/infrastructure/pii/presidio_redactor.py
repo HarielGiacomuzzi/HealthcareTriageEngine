@@ -25,6 +25,7 @@ from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 
 from ecet.domain.claim import RedactedText
+from ecet.domain.rules import ICD10_TOKEN_RE
 
 log = structlog.get_logger(__name__)
 
@@ -90,6 +91,16 @@ class PresidioPiiRedactor:
                 entities=self._entities,
                 score_threshold=self._score_threshold,
             )
+            # presidio's NER labels bare alphanumeric codes (e.g. "M54.5") as
+            # locations. An ICD-10 code surviving redaction is a functional
+            # requirement — the codes are what the entire downstream evaluation
+            # runs on — so any match whose full span IS a code (not merely
+            # containing one) is dropped before counting or anonymising.
+            results = [
+                result
+                for result in results
+                if not ICD10_TOKEN_RE.fullmatch(chunk[result.start : result.end])
+            ]
             for result in results:
                 counts[result.entity_type] = counts.get(result.entity_type, 0) + 1
             pieces.append(

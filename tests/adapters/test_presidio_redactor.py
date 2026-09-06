@@ -50,6 +50,12 @@ async def test_the_custom_recognisers_fire(redactor: PresidioPiiRedactor) -> Non
     assert result.entity_counts["MEMBER_ID"] == 1
 
 
+async def test_locations_are_redacted(redactor: PresidioPiiRedactor) -> None:
+    result = await redactor.redact("Seen at Northwind Medical Center, San Francisco.")
+
+    assert "<LOCATION>" in result.text
+
+
 async def test_dates_of_service_are_kept(redactor: PresidioPiiRedactor) -> None:
     result = await redactor.redact("Date of service: 2026-08-14. Follow-up in six weeks.")
 
