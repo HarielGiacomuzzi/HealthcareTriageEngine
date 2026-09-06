@@ -143,14 +143,16 @@ def _chunks(text: str, limit: int) -> list[str]:
     if len(text) <= limit:
         return [text]
     chunks: list[str] = []
-    current = ""
+    # `None`, not `""`, is the sentinel: an empty leading/trailing paragraph is a
+    # real paragraph and must be accumulated, not treated as "nothing yet".
+    current: str | None = None
     for paragraph in text.split("\n\n"):
-        candidate = f"{current}\n\n{paragraph}" if current else paragraph
-        if current and len(candidate) > limit:
+        candidate = f"{current}\n\n{paragraph}" if current is not None else paragraph
+        if current is not None and len(candidate) > limit:
             chunks.append(current)
             current = paragraph
         else:
             current = candidate
-    if current:
+    if current is not None:
         chunks.append(current)
     return chunks

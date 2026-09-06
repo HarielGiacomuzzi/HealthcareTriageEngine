@@ -92,6 +92,15 @@ async def test_text_beyond_one_chunk_is_still_redacted(
     assert_no_pii(result.text)
 
 
+def test_chunks_keeps_leading_and_trailing_blank_paragraphs() -> None:
+    text = "\n\nA\n\n" + "x" * 600 + "\n\nB\n\n"
+
+    chunks = _chunks(text, limit=100)
+
+    assert len(chunks) > 1
+    assert "\n\n".join(chunks) == text
+
+
 async def test_no_entity_outside_the_policy_is_reported_in_the_counts(
     redactor: PresidioPiiRedactor,
 ) -> None:
