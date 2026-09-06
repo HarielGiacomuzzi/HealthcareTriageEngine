@@ -6,9 +6,10 @@ from typing import Self
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ecet.infrastructure.postgres.repositories import (
+    PostgresIcd10CodeRepository,
+    PostgresPolicyRepository,
     PostgresTenantRepository,
-    # Tasks 4-6 add PostgresClaimRepository, PostgresIcd10CodeRepository,
-    # PostgresPolicyRepository and PostgresReviewTaskRepository here.
+    # Tasks 5-6 add PostgresClaimRepository and PostgresReviewTaskRepository here.
 )
 
 
@@ -20,11 +21,11 @@ class SqlAlchemyUnitOfWork:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.session: AsyncSession = session_factory()
         self.tenants = PostgresTenantRepository(self.session)
-        # Tasks 4-6 uncomment these as the repositories land:
+        self.policies = PostgresPolicyRepository(self.session)
+        self.icd10_codes = PostgresIcd10CodeRepository(self.session)
+        # Tasks 5-6 uncomment these as the repositories land:
         # self.claims = PostgresClaimRepository(self.session)
-        # self.policies = PostgresPolicyRepository(self.session)
         # self.review_tasks = PostgresReviewTaskRepository(self.session)
-        # self.icd10_codes = PostgresIcd10CodeRepository(self.session)
 
     async def __aenter__(self) -> Self:
         return self

@@ -150,6 +150,16 @@ async def test_review_task_repository_lists_only_open_tasks_for_the_tenant() -> 
         await repo.get(uuid4())
 
 
+async def test_the_icd10_fake_satisfies_its_port() -> None:
+    from tests.fakes import FakeIcd10CodeRepository
+
+    from ecet.domain.ports.icd10_repository import Icd10CodeRepository
+
+    fake = FakeIcd10CodeRepository([Icd10Code(code="M54.5")])
+    assert isinstance(fake, Icd10CodeRepository)
+    assert await fake.known_codes() == {Icd10Code(code="M54.5")}
+
+
 async def test_review_task_repository_finds_the_open_task_for_a_claim() -> None:
     """UC-09a idempotency: an existing OPEN task is found without scanning `list_open`."""
     repo = FakeReviewTaskRepository()
