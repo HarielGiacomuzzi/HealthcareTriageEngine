@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck imports test check hooks up down clean logs ps
+.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed
 
 install:
 	uv sync
@@ -28,6 +28,14 @@ hooks:
 
 .env: | .env.example
 	cp .env.example $@
+
+DB_URL ?= postgresql+asyncpg://ecet:ecet@localhost:5432/ecet
+
+migrate: .env
+	ECET_DATABASE_URL=$(DB_URL) uv run alembic upgrade head
+
+seed: .env
+	ECET_DATABASE_URL=$(DB_URL) ECET_ENV=dev uv run ecet seed
 
 up: .env
 	docker compose up --build -d

@@ -20,6 +20,8 @@ RUN useradd --create-home --uid 1000 ecet
 COPY --from=builder /opt/venv /opt/venv
 USER ecet
 WORKDIR /app
+COPY alembic.ini ./
+COPY migrations/ ./migrations/
 EXPOSE 8000
 ENTRYPOINT ["ecet"]
 CMD ["api"]
