@@ -41,3 +41,25 @@ def worker() -> None:
     settings = _load_settings()
     configure_logging(settings.log_level)
     asyncio.run(worker_main.run(settings))
+
+
+@app.command()
+def seed() -> None:
+    """Load the dev seed data (ICD-10 catalogue, tenants, policies). Dev only."""
+    from ecet.infrastructure.postgres.seed import load_seed
+    from ecet.infrastructure.postgres.session import create_engine
+
+    settings = _load_settings()
+    configure_logging(settings.log_level)
+    if settings.env != "dev":
+        typer.echo(f"refusing to seed: ECET_ENV={settings.env!r}, the seed is dev-only", err=True)
+        raise typer.Exit(code=1)
+
+    async def run() -> int:
+        engine = create_engine(settings.database_url.get_secret_value())
+        try:
+            return await load_seed(engine)
+        finally:
+            await engine.dispose()
+
+    typer.echo(f"seed applied: {asyncio.run(run())} statements")

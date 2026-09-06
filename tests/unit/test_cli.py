@@ -56,6 +56,15 @@ def test_worker_command_runs_the_worker(
     assert started == ["dev"]
 
 
+def test_seed_refuses_outside_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ECET_ENV", "prod")
+    monkeypatch.setenv("ECET_S3_EVENT_TOKEN", "t")
+    monkeypatch.setenv("ECET_API_KEY", "k")
+    result = CliRunner().invoke(app, ["seed"])
+    assert result.exit_code == 1
+    assert "dev-only" in result.output
+
+
 def test_invalid_config_exits_one_and_names_the_fields(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
