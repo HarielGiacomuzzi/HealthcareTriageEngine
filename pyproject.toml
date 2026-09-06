@@ -14,6 +14,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.52,<3",
     "asyncpg>=0.31,<0.32",
     "alembic>=1.19,<2",
+    "aiobotocore>=2.15,<3",
 ]
 
 [project.scripts]
@@ -66,6 +67,10 @@ markers = [
     "slow: needs docker / testcontainers",
     "e2e: needs the full compose stack",
 ]
+
+[[tool.mypy.overrides]]
+module = ["aiobotocore.*", "botocore.*"]
+ignore_missing_imports = true
 
 [tool.coverage.run]
 source = ["ecet"]
