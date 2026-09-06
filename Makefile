@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed
+.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures
 
 install:
 	uv sync
@@ -51,3 +51,6 @@ logs: .env
 
 ps: .env
 	docker compose ps
+
+fixtures:
+	uv run python scripts/make_fixtures.py
