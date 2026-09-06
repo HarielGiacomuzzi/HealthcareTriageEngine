@@ -8,12 +8,17 @@ process start, by the API container wiring — never per request.
 **Concurrency.** spaCy is not cheap to run in parallel, so the CPU work goes to a
 worker thread behind a semaphore sized by `ECET_PII_CONCURRENCY`.
 
-**Policy.** Which entities are redacted and what replaces them is passed in from
-`application/redaction_policy.py`. Nothing about the policy is hardcoded here — and
-`DATE_TIME` is simply absent from the analysed entity list, which is how dates of
-service survive.
+**Policy.** Which entities are redacted, what replaces them, and the custom pattern
+regexes are all passed in from `application/redaction_policy.py` — none of that is
+hardcoded here, and `DATE_TIME` is simply absent from the analysed entity list, which
+is how dates of service survive. Two things ARE adapter-owned rather than
+application-owned: the ICD-10 span exemption (a presidio quirk — its NER tags bare
+alphanumeric codes as locations — not a policy choice any other engine would need)
+and the `score=0.9` given to every custom pattern recognizer (an engine wiring detail,
+not a redaction rule).
 """
 
+import time
 from collections.abc import Mapping
 
 import anyio
@@ -40,8 +45,9 @@ def _build_analyzer(spacy_model: str, custom_patterns: Mapping[str, str]) -> Ana
             "models": [{"lang_code": "en", "model_name": spacy_model}],
         }
     )
+    nlp_engine = provider.create_engine()
     registry = RecognizerRegistry()
-    registry.load_predefined_recognizers(nlp_engine=provider.create_engine(), languages=["en"])
+    registry.load_predefined_recognizers(nlp_engine=nlp_engine, languages=["en"])
     for entity, regex in custom_patterns.items():
         registry.add_recognizer(
             PatternRecognizer(
@@ -49,7 +55,7 @@ def _build_analyzer(spacy_model: str, custom_patterns: Mapping[str, str]) -> Ana
                 patterns=[Pattern(name=f"{entity.lower()}_pattern", regex=regex, score=0.9)],
             )
         )
-    return AnalyzerEngine(nlp_engine=provider.create_engine(), registry=registry)
+    return AnalyzerEngine(nlp_engine=nlp_engine, registry=registry)
 
 
 class PresidioPiiRedactor:
@@ -82,6 +88,7 @@ class PresidioPiiRedactor:
             return await anyio.to_thread.run_sync(self._redact, text)
 
     def _redact(self, text: str) -> RedactedText:
+        started = time.perf_counter()
         counts: dict[str, int] = {}
         pieces: list[str] = []
         for chunk in _chunks(text, self._chunk_chars):
@@ -115,7 +122,13 @@ class PresidioPiiRedactor:
                 ).text
             )
         # Never log the text or a sample of it — counts and duration only (ADR-001).
-        log.info("pii.redacted", entities=sum(counts.values()), characters=len(text))
+        duration_ms = (time.perf_counter() - started) * 1000
+        log.info(
+            "pii.redacted",
+            entities=sum(counts.values()),
+            characters=len(text),
+            duration_ms=round(duration_ms, 1),
+        )
         return RedactedText(text="\n\n".join(pieces), entity_counts=counts, redactor=REDACTOR)
 
 

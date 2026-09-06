@@ -77,10 +77,6 @@ markers = [
 module = ["aiobotocore.*", "botocore.*"]
 ignore_missing_imports = true
 
-[[tool.mypy.overrides]]
-module = ["presidio_analyzer.*", "presidio_anonymizer.*"]
-ignore_missing_imports = true
-
 [tool.coverage.run]
 source = ["ecet"]
 

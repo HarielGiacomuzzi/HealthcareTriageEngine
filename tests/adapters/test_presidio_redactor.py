@@ -12,7 +12,11 @@ from ecet.application.redaction_policy import (
     ENTITY_REPLACEMENTS,
     SCORE_THRESHOLD,
 )
-from ecet.infrastructure.pii.presidio_redactor import PresidioPiiRedactor
+from ecet.infrastructure.pii.presidio_redactor import (
+    DEFAULT_CHUNK_CHARS,
+    PresidioPiiRedactor,
+    _chunks,
+)
 
 
 @pytest.fixture(scope="session")
@@ -39,6 +43,11 @@ async def test_icd10_codes_survive(redactor: PresidioPiiRedactor) -> None:
     result = await redactor.redact(read_note("meets"))
 
     assert "M54.5" in result.text
+    # Pins the exemption filter running BEFORE the counts loop: if it moved after,
+    # "M54.5" would still print (LOCATION's anonymize op never touched it) but the
+    # count would double to 2 (M54.5 plus the "MD" false positive), and this test
+    # would still pass on the `in result.text` assertion alone.
+    assert result.entity_counts["LOCATION"] == 1
 
 
 async def test_the_custom_recognisers_fire(redactor: PresidioPiiRedactor) -> None:
@@ -72,15 +81,18 @@ async def test_empty_text_is_not_an_error(redactor: PresidioPiiRedactor) -> None
 async def test_text_beyond_one_chunk_is_still_redacted(
     redactor: PresidioPiiRedactor,
 ) -> None:
-    filler = "\n\n".join("The member attended the scheduled session." for _ in range(400))
+    filler = "\n\n".join("The member attended the scheduled session." for _ in range(500))
     long_note = f"{filler}\n\n{read_note('meets')}"
+    # Prove this test actually exercises the multi-chunk path, not the
+    # `len(text) <= limit` short-circuit — a regression there must fail loudly.
+    assert len(_chunks(long_note, DEFAULT_CHUNK_CHARS)) > 1
 
     result = await redactor.redact(long_note)
 
     assert_no_pii(result.text)
 
 
-async def test_every_entity_in_the_policy_is_reported_in_the_counts(
+async def test_no_entity_outside_the_policy_is_reported_in_the_counts(
     redactor: PresidioPiiRedactor,
 ) -> None:
     result = await redactor.redact(read_note("meets"))

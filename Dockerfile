@@ -9,10 +9,10 @@ WORKDIR /app
 # Dependency layer first so source edits do not re-resolve the world.
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
-COPY src/ ./src/
-RUN uv sync --frozen --no-dev --no-editable
 ARG SPACY_MODEL=en_core_web_lg
 RUN VIRTUAL_ENV=/opt/venv /opt/venv/bin/python -m spacy download ${SPACY_MODEL}
+COPY src/ ./src/
+RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim AS runtime
 ENV PATH="/opt/venv/bin:$PATH" \
