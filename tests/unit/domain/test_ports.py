@@ -11,7 +11,12 @@ from tests.fakes import (
 )
 
 from ecet.domain.claim import Claim, ClaimStatus, SourceObject
-from ecet.domain.errors import ClaimNotFound, ReviewTaskNotFound, TenantNotFound
+from ecet.domain.errors import (
+    ClaimNotFound,
+    ConcurrentModification,
+    ReviewTaskNotFound,
+    TenantNotFound,
+)
 from ecet.domain.evaluation import ReviewReason, ReviewStatus, ReviewTask
 from ecet.domain.ids import ClaimId, PolicyId, TenantId
 from ecet.domain.policy import Icd10Code, Policy
@@ -83,6 +88,36 @@ async def test_claim_repository_raises_when_missing() -> None:
         await FakeClaimRepository().get(ClaimId(uuid4()))
 
 
+async def test_saving_a_claim_this_repository_never_loaded_raises() -> None:
+    """Mirrors `PostgresClaimRepository.save`: a fresh repository has no baseline for
+    a claim it never returned from `add`/`get`/`find_by_source`/`list_by_status`."""
+    repo = FakeClaimRepository()
+    with pytest.raises(ConcurrentModification, match="not loaded"):
+        await repo.save(build_claim())
+
+
+async def test_saving_after_another_writer_changed_the_claim_raises() -> None:
+    """Two repositories loading the same claim model two independent unit-of-work
+    sessions; the second writer's save must lose, exactly like
+    `test_a_second_writer_loses_the_optimistic_save` against real Postgres."""
+    setup_repo = FakeClaimRepository()
+    claim = build_claim()
+    await setup_repo.add(claim)
+
+    later = NOW.replace(minute=NOW.minute + 1)
+    first_repo, second_repo = FakeClaimRepository(), FakeClaimRepository()
+    first_repo.claims = second_repo.claims = setup_repo.claims
+    first = await first_repo.get(claim.id)
+    stale = await second_repo.get(claim.id)
+
+    first.transition(ClaimStatus.EXTRACTED, now=later)
+    await first_repo.save(first)
+
+    stale.transition(ClaimStatus.EXTRACTION_FAILED, reason="boom", now=later)
+    with pytest.raises(ConcurrentModification, match="changed since"):
+        await second_repo.save(stale)
+
+
 async def test_policy_repository_filters_on_effectiveness() -> None:
     active = build_policy()
     expired = build_policy(effective_to=date(2026, 2, 1))
@@ -148,6 +183,16 @@ async def test_review_task_repository_lists_only_open_tasks_for_the_tenant() -> 
 
     with pytest.raises(ReviewTaskNotFound):
         await repo.get(uuid4())
+
+
+async def test_the_icd10_fake_satisfies_its_port() -> None:
+    from tests.fakes import FakeIcd10CodeRepository
+
+    from ecet.domain.ports.icd10_repository import Icd10CodeRepository
+
+    fake = FakeIcd10CodeRepository([Icd10Code(code="M54.5")])
+    assert isinstance(fake, Icd10CodeRepository)
+    assert await fake.known_codes() == {Icd10Code(code="M54.5")}
 
 
 async def test_review_task_repository_finds_the_open_task_for_a_claim() -> None:
