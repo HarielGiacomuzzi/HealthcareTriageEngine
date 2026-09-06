@@ -1,5 +1,6 @@
 import httpx
 import pytest
+import structlog
 from fastapi import FastAPI
 
 from ecet.application.errors import ExtractionFailed, QueuePublishError
@@ -57,6 +58,21 @@ async def test_the_detail_never_echoes_the_exception_message() -> None:
         response = await client.get("/boom")
 
     assert "secret-patient-name" not in response.text
+
+
+async def test_the_message_still_reaches_the_log_record() -> None:
+    """The other half of the contract: the client never sees the message, but it
+    must not be silently dropped either — it belongs in the log, where the
+    redaction guard and access controls apply."""
+    error = InvalidObjectKey("expected tenants/... got uploads/secret-patient-name.pdf")
+    transport = httpx.ASGITransport(app=build_app(error), raise_app_exceptions=False)
+
+    with structlog.testing.capture_logs() as captured:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/boom")
+
+    assert "secret-patient-name" not in response.text
+    assert any("secret-patient-name" in entry.get("message", "") for entry in captured)
 
 
 async def test_an_unmapped_domain_error_is_a_500() -> None:

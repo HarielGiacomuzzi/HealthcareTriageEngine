@@ -110,7 +110,9 @@ def register_error_handlers(app: FastAPI) -> None:
             claim_id=str(claim_id) if claim_id is not None else None,
         )
         return JSONResponse(
-            body.model_dump(), status_code=problem.status, media_type=PROBLEM_MEDIA_TYPE
+            body.model_dump(exclude_none=True),
+            status_code=problem.status,
+            media_type=PROBLEM_MEDIA_TYPE,
         )
 
     async def handle_unmapped(request: Request, error: Exception) -> JSONResponse:
@@ -125,7 +127,7 @@ def register_error_handlers(app: FastAPI) -> None:
                 title=UNKNOWN.title,
                 status=UNKNOWN.status,
                 detail=UNKNOWN.detail,
-            ).model_dump(),
+            ).model_dump(exclude_none=True),
             status_code=UNKNOWN.status,
             media_type=PROBLEM_MEDIA_TYPE,
         )

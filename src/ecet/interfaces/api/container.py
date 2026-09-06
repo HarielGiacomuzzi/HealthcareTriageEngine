@@ -113,8 +113,10 @@ async def build_container(settings: Settings) -> ApiContainer:
         return True  # constructing it loaded the model; reaching here means it is up
 
     async def aclose() -> None:
-        await queue.stop()
-        await engine.dispose()
+        try:
+            await queue.stop()
+        finally:
+            await engine.dispose()
 
     return ApiContainer(
         settings=settings,
