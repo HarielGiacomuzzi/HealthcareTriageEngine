@@ -9,8 +9,8 @@ from ecet.infrastructure.postgres.repositories import (
     PostgresClaimRepository,
     PostgresIcd10CodeRepository,
     PostgresPolicyRepository,
+    PostgresReviewTaskRepository,
     PostgresTenantRepository,
-    # Task 6 adds PostgresReviewTaskRepository here.
 )
 
 
@@ -25,8 +25,7 @@ class SqlAlchemyUnitOfWork:
         self.policies = PostgresPolicyRepository(self.session)
         self.icd10_codes = PostgresIcd10CodeRepository(self.session)
         self.claims = PostgresClaimRepository(self.session)
-        # Task 6 uncomments this as the repository lands:
-        # self.review_tasks = PostgresReviewTaskRepository(self.session)
+        self.review_tasks = PostgresReviewTaskRepository(self.session)
 
     async def __aenter__(self) -> Self:
         return self

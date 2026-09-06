@@ -12,7 +12,13 @@ from sqlalchemy import insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ecet.domain.claim import Claim, ClaimStatus
-from ecet.domain.errors import ClaimNotFound, ConcurrentModification, TenantNotFound
+from ecet.domain.errors import (
+    ClaimNotFound,
+    ConcurrentModification,
+    ReviewTaskNotFound,
+    TenantNotFound,
+)
+from ecet.domain.evaluation import ReviewStatus, ReviewTask
 from ecet.domain.ids import ClaimId, PolicyId, TenantId
 from ecet.domain.policy import Icd10Code, Policy
 from ecet.domain.tenant import Tenant
@@ -20,9 +26,17 @@ from ecet.infrastructure.postgres.mappers import (
     claim_from_row,
     claim_to_row_values,
     policy_from_row,
+    review_task_from_row,
+    review_task_to_row_values,
     tenant_from_row,
 )
-from ecet.infrastructure.postgres.orm import ClaimRow, Icd10CodeRow, PolicyRow, TenantRow
+from ecet.infrastructure.postgres.orm import (
+    ClaimRow,
+    Icd10CodeRow,
+    PolicyRow,
+    ReviewTaskRow,
+    TenantRow,
+)
 
 
 class PostgresTenantRepository:
@@ -145,3 +159,54 @@ class PostgresClaimRepository:
         )
         rows = (await self._session.scalars(statement)).all()
         return [self._track(claim_from_row(row)) for row in rows]
+
+
+class PostgresReviewTaskRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, task: ReviewTask) -> None:
+        await self._session.execute(insert(ReviewTaskRow).values(**review_task_to_row_values(task)))
+
+    async def get(self, task_id: UUID) -> ReviewTask:
+        row = await self._session.get(ReviewTaskRow, task_id, populate_existing=True)
+        if row is None:
+            raise ReviewTaskNotFound(str(task_id))
+        return review_task_from_row(row)
+
+    async def find_open_by_claim(self, claim_id: ClaimId) -> ReviewTask | None:
+        """UC-09a idempotency. `review_tasks.claim_id` is unique, so this is at most one row."""
+        statement = (
+            select(ReviewTaskRow)
+            .where(
+                ReviewTaskRow.claim_id == claim_id,
+                ReviewTaskRow.status == ReviewStatus.OPEN.value,
+            )
+            .execution_options(populate_existing=True)
+        )
+        row = (await self._session.scalars(statement)).one_or_none()
+        return None if row is None else review_task_from_row(row)
+
+    async def list_open(self, tenant_id: TenantId, limit: int = 50) -> list[ReviewTask]:
+        statement = (
+            select(ReviewTaskRow)
+            .where(
+                ReviewTaskRow.tenant_id == str(tenant_id),
+                ReviewTaskRow.status == ReviewStatus.OPEN.value,
+            )
+            .order_by(ReviewTaskRow.created_at)
+            .limit(limit)
+            .execution_options(populate_existing=True)
+        )
+        rows = (await self._session.scalars(statement)).all()
+        return [review_task_from_row(row) for row in rows]
+
+    async def save(self, task: ReviewTask) -> None:
+        result = await self._session.execute(
+            update(ReviewTaskRow)
+            .where(ReviewTaskRow.id == task.id)
+            .values(**review_task_to_row_values(task))
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount == 0:  # type: ignore[attr-defined]  # a core UPDATE is a CursorResult
+            raise ReviewTaskNotFound(str(task.id))

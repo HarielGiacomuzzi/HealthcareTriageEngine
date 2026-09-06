@@ -3,9 +3,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tests.adapters.helpers import build_tenant
 
+from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.domain.ids import TenantId
 from ecet.infrastructure.postgres.orm import TenantRow
 from ecet.infrastructure.postgres.unit_of_work import SqlAlchemyUnitOfWork
+
+
+async def test_the_unit_of_work_satisfies_the_port(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    assert isinstance(SqlAlchemyUnitOfWork(session_factory), UnitOfWork)
 
 
 async def _count_tenants(session_factory: async_sessionmaker[AsyncSession]) -> int:
