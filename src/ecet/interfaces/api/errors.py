@@ -99,6 +99,7 @@ def register_error_handlers(app: FastAPI) -> None:
             error=type(error).__name__,
             message=str(error),
             status=problem.status,
+            claim_id=claim_id,
             path=request.url.path,
         )
         body = ProblemDetails(
@@ -112,4 +113,22 @@ def register_error_handlers(app: FastAPI) -> None:
             body.model_dump(), status_code=problem.status, media_type=PROBLEM_MEDIA_TYPE
         )
 
+    async def handle_unmapped(request: Request, error: Exception) -> JSONResponse:
+        # A generic-`Exception` handler still sits behind FastAPI's own HTTPException
+        # handler in Starlette's mro-based lookup, so a 401/404 raised via
+        # `HTTPException` is untouched by this — only a truly unhandled exception
+        # (a bug) reaches here.
+        log.error("api.unhandled_error", error=type(error).__name__, path=request.url.path)
+        return JSONResponse(
+            ProblemDetails(
+                type="https://ecet.invalid/problems/Unknown",
+                title=UNKNOWN.title,
+                status=UNKNOWN.status,
+                detail=UNKNOWN.detail,
+            ).model_dump(),
+            status_code=UNKNOWN.status,
+            media_type=PROBLEM_MEDIA_TYPE,
+        )
+
     app.add_exception_handler(DomainError, handle)
+    app.add_exception_handler(Exception, handle_unmapped)
