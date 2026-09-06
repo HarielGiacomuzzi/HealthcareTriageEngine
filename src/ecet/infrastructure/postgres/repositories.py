@@ -5,17 +5,24 @@ five share one `AsyncSession`, owned by the unit of work.
 """
 
 from collections.abc import Iterable
-from datetime import date
+from datetime import date, datetime
+from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ecet.domain.errors import TenantNotFound
-from ecet.domain.ids import PolicyId, TenantId
+from ecet.domain.claim import Claim, ClaimStatus
+from ecet.domain.errors import ClaimNotFound, ConcurrentModification, TenantNotFound
+from ecet.domain.ids import ClaimId, PolicyId, TenantId
 from ecet.domain.policy import Icd10Code, Policy
 from ecet.domain.tenant import Tenant
-from ecet.infrastructure.postgres.mappers import policy_from_row, tenant_from_row
-from ecet.infrastructure.postgres.orm import Icd10CodeRow, PolicyRow, TenantRow
+from ecet.infrastructure.postgres.mappers import (
+    claim_from_row,
+    claim_to_row_values,
+    policy_from_row,
+    tenant_from_row,
+)
+from ecet.infrastructure.postgres.orm import ClaimRow, Icd10CodeRow, PolicyRow, TenantRow
 
 
 class PostgresTenantRepository:
@@ -72,3 +79,69 @@ class PostgresIcd10CodeRepository:
         # ever calls this per claim.
         codes = (await self._session.scalars(select(Icd10CodeRow.code))).all()
         return frozenset(Icd10Code(code=code) for code in codes)
+
+
+class PostgresClaimRepository:
+    """`save` is optimistic on `updated_at` (see the postgres spec).
+
+    `Claim` carries no version column, and `transition()` overwrites `updated_at` in
+    place, so the pre-mutation value has to be remembered here — one entry per claim
+    this repository has seen. The repository lives exactly as long as its unit of
+    work, so the map cannot grow unbounded.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._baseline: dict[UUID, datetime] = {}
+
+    def _track(self, claim: Claim) -> Claim:
+        self._baseline[claim.id] = claim.updated_at
+        return claim
+
+    async def add(self, claim: Claim) -> None:
+        await self._session.execute(insert(ClaimRow).values(**claim_to_row_values(claim)))
+        self._track(claim)
+
+    async def get(self, claim_id: ClaimId) -> Claim:
+        # populate_existing: a core UPDATE does not refresh the identity map, so a
+        # second read in the same session would otherwise hand back the stale row.
+        row = await self._session.get(ClaimRow, claim_id, populate_existing=True)
+        if row is None:
+            raise ClaimNotFound(str(claim_id))
+        return self._track(claim_from_row(row))
+
+    async def find_by_source(self, bucket: str, key: str, etag: str) -> Claim | None:
+        statement = (
+            select(ClaimRow)
+            .where(ClaimRow.bucket == bucket, ClaimRow.key == key, ClaimRow.etag == etag)
+            .execution_options(populate_existing=True)
+        )
+        row = (await self._session.scalars(statement)).one_or_none()
+        return None if row is None else self._track(claim_from_row(row))
+
+    async def save(self, claim: Claim) -> None:
+        baseline = self._baseline.get(claim.id)
+        if baseline is None:
+            raise ConcurrentModification(
+                f"claim {claim.id} was not loaded by this unit of work; re-read it first"
+            )
+        result = await self._session.execute(
+            update(ClaimRow)
+            .where(ClaimRow.id == claim.id, ClaimRow.updated_at == baseline)
+            .values(**claim_to_row_values(claim))
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount == 0:  # type: ignore[attr-defined]  # a core UPDATE is a CursorResult
+            raise ConcurrentModification(f"claim {claim.id} changed since it was read")
+        self._track(claim)
+
+    async def list_by_status(self, status: ClaimStatus, *, limit: int = 50) -> list[Claim]:
+        statement = (
+            select(ClaimRow)
+            .where(ClaimRow.status == status.value)
+            .order_by(ClaimRow.created_at)
+            .limit(limit)
+            .execution_options(populate_existing=True)
+        )
+        rows = (await self._session.scalars(statement)).all()
+        return [self._track(claim_from_row(row)) for row in rows]
