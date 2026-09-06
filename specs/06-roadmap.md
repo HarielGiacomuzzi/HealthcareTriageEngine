@@ -48,6 +48,7 @@ Specs: [UC-01](02-use-cases/UC-01-ingest-claim-document.md)–[UC-05](02-use-cas
 - Worker consumer, ack/nack classification, DLQ, graceful shutdown.
 - Carried from Phase 0: `mock-client` compose service (`services/mock-client/`, own Dockerfile).
 - Carried from Phase 1: ICD-10 extraction in `domain/rules.py` is pattern-only and false-positives on clinical prose ("Vitamin B12", the "T12" vertebra); validate extracted codes against the catalogue Phase 2 seeded, read through `Icd10CodeRepository.known_codes()`. `T12` is itself a real code, so that one false positive survives — a note mentioning the T12 vertebra still looks like a diagnosis.
+- Carried from Phase 2: the seeded tenants' webhook URLs already point at `http://mock-client:8081/hooks/...` ([tenant seed](01-domain/tenant.md#4-seed)); this is the phase that makes that hostname resolve.
 Done when: full loop `PDF drop → webhook received by mock-client` with fake LLM; low-confidence note → `REVIEW_PENDING`.
 Specs: [UC-06](02-use-cases/UC-06-evaluate-claim.md)–[UC-09](02-use-cases/UC-09-human-review.md), [llm-gateway](03-infrastructure/llm-gateway.md), [webhook-client](03-infrastructure/webhook-client.md), [queue-rabbitmq](03-infrastructure/queue-rabbitmq.md), [worker](04-interfaces/worker.md).
 
@@ -103,6 +104,20 @@ Every deferral recorded in [`docs/plans/2026-09-05-phase-1-domain-core.md`](../d
 | 7 | `rules.aggregate()` raises `KeyError` on a check name outside `_VERDICT_ON_FAIL` | accepted — the four names are internal to `run_checks` |
 | 8 | `limit` is keyword-only on `ClaimRepository.list_by_status` but positional on `ReviewTaskRepository.list_open` | accepted — each matches its own spec |
 | 9 | `ReviewTaskNotFound`'s docstring promises a tenant scope that `get(task_id)` cannot enforce | accepted — [UC-09c](02-use-cases/UC-09-human-review.md#uc-09c-resolvereview) has the same gap; the use case checks the tenant |
+
+## Carried over from Phase 2
+
+Every deferral recorded in [`docs/plans/2026-09-06-phase-2-persistence.md`](../docs/plans/2026-09-06-phase-2-persistence.md#deviations-from-spec-record-in-the-pr-description), with the phase that closes it. Each is also listed inline in its phase above.
+
+| # | Deferred in Phase 2 | Closed by |
+|---|---------------------|-----------|
+| 1 | api startup runs `alembic upgrade head` + the seed when `ECET_AUTO_MIGRATE=true`; Phase 2 shipped the migration, the seed and the in-image `alembic.ini` + `migrations/` copy, but wired neither into the api process, which has no database yet | Phase 3 |
+| 2 | The compose `postgres` init-dir seeding path from the [postgres spec](03-infrastructure/postgres.md#seed) is dropped: it runs before Alembic creates the tables. `ecet seed` is the only seeding path | accepted, permanent |
+| 3 | The overall 85% coverage gate moved to the CI `slow` job, since the adapter code it measures is only reachable with Docker | accepted, permanent |
+| 4 | Extracted ICD-10 codes are validated against the seeded catalogue through `Icd10CodeRepository.known_codes()`. `T12` is itself a real code, so "the T12 vertebra" still reads as a diagnosis even with the catalogue | Phase 4 |
+| 5 | `known_codes()` reads the whole `icd10_codes` table per call (a `ponytail:` comment marks it); cache it in the caller if a per-claim path ever calls it | accepted unless it shows up hot |
+| 6 | The seeded tenants' webhook URLs point at `http://mock-client:8081/hooks/...`, and the `mock-client` compose service does not exist until Phase 4 | Phase 4 |
+| 7 | `ecet seed` gives no distinct error for a connection failure versus a bad statement | accepted, it is a dev-only command |
 
 ## Deferred (explicitly out of v1)
 - OCR for scanned PDFs.
