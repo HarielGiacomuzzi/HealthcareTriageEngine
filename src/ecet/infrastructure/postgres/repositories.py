@@ -15,6 +15,7 @@ from ecet.domain.claim import Claim, ClaimStatus
 from ecet.domain.errors import (
     ClaimNotFound,
     ConcurrentModification,
+    ReviewAlreadyResolved,
     ReviewTaskNotFound,
     TenantNotFound,
 )
@@ -112,6 +113,11 @@ class PostgresClaimRepository:
         self._baseline[claim.id] = claim.updated_at
         return claim
 
+    def clear_baseline(self) -> None:
+        """Drop every tracked `updated_at`. Called by the unit of work on exit so a
+        re-entered instance never compares against baselines a rollback undid."""
+        self._baseline.clear()
+
     async def add(self, claim: Claim) -> None:
         await self._session.execute(insert(ClaimRow).values(**claim_to_row_values(claim)))
         self._track(claim)
@@ -202,11 +208,19 @@ class PostgresReviewTaskRepository:
         return [review_task_from_row(row) for row in rows]
 
     async def save(self, task: ReviewTask) -> None:
+        """A `RESOLVED` save additionally requires the stored row to still be `OPEN`,
+        guarding UC-09c against two reviewers resolving the same task: the second
+        `save` must lose, not silently overwrite the first reviewer's resolution."""
+        statement = update(ReviewTaskRow).where(ReviewTaskRow.id == task.id)
+        if task.status is ReviewStatus.RESOLVED:
+            statement = statement.where(ReviewTaskRow.status == ReviewStatus.OPEN.value)
         result = await self._session.execute(
-            update(ReviewTaskRow)
-            .where(ReviewTaskRow.id == task.id)
-            .values(**review_task_to_row_values(task))
-            .execution_options(synchronize_session=False)
+            statement.values(**review_task_to_row_values(task)).execution_options(
+                synchronize_session=False
+            )
         )
         if result.rowcount == 0:  # type: ignore[attr-defined]  # a core UPDATE is a CursorResult
-            raise ReviewTaskNotFound(str(task.id))
+            row = await self._session.get(ReviewTaskRow, task.id)
+            if row is None:
+                raise ReviewTaskNotFound(str(task.id))
+            raise ReviewAlreadyResolved(str(task.id))

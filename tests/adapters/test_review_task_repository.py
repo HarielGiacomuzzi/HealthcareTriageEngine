@@ -13,7 +13,7 @@ from tests.adapters.helpers import (
 )
 
 from ecet.domain.claim import Claim
-from ecet.domain.errors import ReviewTaskNotFound
+from ecet.domain.errors import ReviewAlreadyResolved, ReviewTaskNotFound
 from ecet.domain.evaluation import Decision, ReviewReason, ReviewStatus, ReviewTask
 from ecet.domain.ids import ClaimId, TenantId
 from ecet.infrastructure.postgres.repositories import PostgresReviewTaskRepository
@@ -143,6 +143,34 @@ async def test_saving_a_task_that_is_not_stored_raises(
     async with session_factory() as session:
         with pytest.raises(ReviewTaskNotFound):
             await PostgresReviewTaskRepository(session).save(build_task(claim))
+
+
+async def test_a_second_reviewer_loses_the_double_resolve_race(
+    session_factory: async_sessionmaker[AsyncSession], claim: Claim
+) -> None:
+    task = build_task(claim)
+    async with session_factory() as session:
+        await PostgresReviewTaskRepository(session).add(task)
+        await session.commit()
+
+    async with session_factory() as first_session, session_factory() as second_session:
+        first_repository = PostgresReviewTaskRepository(first_session)
+        second_repository = PostgresReviewTaskRepository(second_session)
+        first = await first_repository.get(task.id)
+        second = await second_repository.get(task.id)
+
+        first.resolve(resolution=Decision.MEETS_NECESSITY, reviewer="nurse-a", notes=None, now=NOW)
+        await first_repository.save(first)
+        await first_session.commit()
+
+        second.resolve(resolution=Decision.DOES_NOT_MEET, reviewer="nurse-b", notes=None, now=NOW)
+        with pytest.raises(ReviewAlreadyResolved):
+            await second_repository.save(second)
+
+    async with session_factory() as session:
+        stored = await PostgresReviewTaskRepository(session).get(task.id)
+        assert stored.reviewer == "nurse-a"
+        assert stored.resolution is Decision.MEETS_NECESSITY
 
 
 async def test_claim_id_survives_the_round_trip_as_a_claim_id(

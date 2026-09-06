@@ -6,12 +6,17 @@ that define those ports.
 """
 
 from collections.abc import Iterable
-from datetime import date
+from datetime import date, datetime
 from types import TracebackType
 from uuid import UUID
 
 from ecet.domain.claim import Claim, ClaimStatus
-from ecet.domain.errors import ClaimNotFound, ReviewTaskNotFound, TenantNotFound
+from ecet.domain.errors import (
+    ClaimNotFound,
+    ConcurrentModification,
+    ReviewTaskNotFound,
+    TenantNotFound,
+)
 from ecet.domain.evaluation import ReviewStatus, ReviewTask
 from ecet.domain.ids import ClaimId, PolicyId, TenantId
 from ecet.domain.policy import Icd10Code, Policy
@@ -19,16 +24,30 @@ from ecet.domain.tenant import Tenant
 
 
 class FakeClaimRepository:
+    """Mirrors `PostgresClaimRepository`'s optimistic-save contract: `save` on a claim
+    this repository never loaded, or whose stored `updated_at` has moved on since,
+    raises `ConcurrentModification` (see `src/ecet/infrastructure/postgres/repositories.py`).
+
+    Every getter hands back a copy — mutating it (e.g. `Claim.transition`) must not
+    silently change the stored row, the same as a real round trip through Postgres."""
+
     def __init__(self) -> None:
         self.claims: dict[ClaimId, Claim] = {}
         self.saved: list[ClaimId] = []
+        self._baseline: dict[ClaimId, datetime] = {}
+
+    def _track(self, claim: Claim) -> Claim:
+        copy = claim.model_copy()
+        self._baseline[copy.id] = copy.updated_at
+        return copy
 
     async def add(self, claim: Claim) -> None:
-        self.claims[claim.id] = claim
+        self.claims[claim.id] = claim.model_copy()
+        self._baseline[claim.id] = claim.updated_at
 
     async def get(self, claim_id: ClaimId) -> Claim:
         try:
-            return self.claims[claim_id]
+            return self._track(self.claims[claim_id])
         except KeyError:
             raise ClaimNotFound(str(claim_id)) from None
 
@@ -36,15 +55,26 @@ class FakeClaimRepository:
         for claim in self.claims.values():
             source = claim.source
             if (source.bucket, source.key, source.etag) == (bucket, key, etag):
-                return claim
+                return self._track(claim)
         return None
 
     async def save(self, claim: Claim) -> None:
-        self.claims[claim.id] = claim
+        baseline = self._baseline.get(claim.id)
+        if baseline is None:
+            raise ConcurrentModification(
+                f"claim {claim.id} was not loaded by this unit of work; re-read it first"
+            )
+        stored = self.claims.get(claim.id)
+        if stored is not None and stored.updated_at != baseline:
+            raise ConcurrentModification(f"claim {claim.id} changed since it was read")
+        self.claims[claim.id] = claim.model_copy()
         self.saved.append(claim.id)
+        self._baseline[claim.id] = claim.updated_at
 
     async def list_by_status(self, status: ClaimStatus, *, limit: int = 50) -> list[Claim]:
-        return [claim for claim in self.claims.values() if claim.status is status][:limit]
+        return [self._track(claim) for claim in self.claims.values() if claim.status is status][
+            :limit
+        ]
 
 
 class FakePolicyRepository:

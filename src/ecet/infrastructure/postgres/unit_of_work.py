@@ -17,7 +17,11 @@ from ecet.infrastructure.postgres.repositories import (
 class SqlAlchemyUnitOfWork:
     """`AsyncSession` construction is lazy — no connection is taken until the first
     statement — so building the repositories in `__init__` costs nothing and keeps
-    every attribute non-optional for the type checker."""
+    every attribute non-optional for the type checker.
+
+    One instance per request/message. `__aexit__` rolls back and closes the session,
+    but a fresh session is not created on re-entry, so reusing an instance across
+    transactions is not supported."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.session: AsyncSession = session_factory()
@@ -41,6 +45,7 @@ class SqlAlchemyUnitOfWork:
         try:
             await self.session.rollback()
         finally:
+            self.claims.clear_baseline()
             await self.session.close()
 
     async def commit(self) -> None:
