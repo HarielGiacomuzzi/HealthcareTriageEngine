@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures
+.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model
 
 install:
 	uv sync
@@ -54,3 +54,6 @@ ps: .env
 
 fixtures:
 	uv run python scripts/make_fixtures.py
+
+spacy-model:
+	uv run python -m spacy download $(or $(SPACY_MODEL),en_core_web_lg)
