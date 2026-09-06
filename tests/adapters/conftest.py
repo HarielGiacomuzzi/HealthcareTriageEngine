@@ -7,14 +7,19 @@ Everything under `tests/adapters/` is marked `slow`, so the default
 import os
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from testcontainers.community.postgres import PostgresContainer
+
+from ecet.infrastructure.postgres.session import create_engine, create_session_factory
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 THIS_DIR = Path(__file__).resolve().parent
+TABLES = "claims, icd10_codes, policies, review_tasks, tenants"
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -39,3 +44,17 @@ def postgres_url() -> Iterator[str]:
             check=True,
         )
         yield url
+
+
+@pytest.fixture
+async def session_factory(postgres_url: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """A clean database per test.
+
+    The engine is function-scoped on purpose: asyncpg connections belong to the event
+    loop that opened them, and pytest-asyncio gives every test a fresh loop.
+    """
+    engine = create_engine(postgres_url)
+    async with engine.begin() as connection:
+        await connection.execute(text(f"TRUNCATE {TABLES} RESTART IDENTITY CASCADE"))
+    yield create_session_factory(engine)
+    await engine.dispose()

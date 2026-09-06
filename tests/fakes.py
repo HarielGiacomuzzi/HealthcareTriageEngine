@@ -7,13 +7,14 @@ that define those ports.
 
 from collections.abc import Iterable
 from datetime import date
+from types import TracebackType
 from uuid import UUID
 
 from ecet.domain.claim import Claim, ClaimStatus
 from ecet.domain.errors import ClaimNotFound, ReviewTaskNotFound, TenantNotFound
 from ecet.domain.evaluation import ReviewStatus, ReviewTask
 from ecet.domain.ids import ClaimId, PolicyId, TenantId
-from ecet.domain.policy import Policy
+from ecet.domain.policy import Icd10Code, Policy
 from ecet.domain.tenant import Tenant
 
 
@@ -111,3 +112,44 @@ class FakeReviewTaskRepository:
 
     async def save(self, task: ReviewTask) -> None:
         self.tasks[task.id] = task
+
+
+class FakeIcd10CodeRepository:
+    def __init__(self, codes: Iterable[Icd10Code] = ()) -> None:
+        self.codes = frozenset(codes)
+
+    async def known_codes(self) -> frozenset[Icd10Code]:
+        return self.codes
+
+
+class FakeUnitOfWork:
+    """In-memory unit of work. `commit()` records the call; the fakes never roll back,
+    because nothing they hold is transactional."""
+
+    def __init__(
+        self,
+        *,
+        tenants: Iterable[Tenant] = (),
+        policies: Iterable[Policy] = (),
+        known_codes: Iterable[Icd10Code] = (),
+    ) -> None:
+        self.claims = FakeClaimRepository()
+        self.policies = FakePolicyRepository(policies)
+        self.tenants = FakeTenantRepository(tenants)
+        self.review_tasks = FakeReviewTaskRepository()
+        self.icd10_codes = FakeIcd10CodeRepository(known_codes)
+        self.commits = 0
+
+    async def __aenter__(self) -> "FakeUnitOfWork":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        return None
+
+    async def commit(self) -> None:
+        self.commits += 1
