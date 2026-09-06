@@ -13,6 +13,7 @@ from types import TracebackType
 from uuid import UUID
 
 from ecet.application.errors import ObjectNotFound
+from ecet.application.messages import EvaluationMessage
 from ecet.application.ports.object_storage import ObjectHead
 from ecet.domain.claim import Claim, ClaimStatus, RedactedText
 from ecet.domain.errors import (
@@ -281,3 +282,17 @@ class FakePiiRedactor:
             if hits:
                 counts[entity] = counts.get(entity, 0) + hits
         return RedactedText(text=result, entity_counts=counts, redactor="fake")
+
+
+class FakeEvaluationQueue:
+    """Records publishes. `error` makes the next publish fail, which is how UC-01's
+    'claim stays POLICIES_ATTACHED' branch is exercised."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.published: list[EvaluationMessage] = []
+        self.error = error
+
+    async def publish(self, message: EvaluationMessage) -> None:
+        if self.error is not None:
+            raise self.error
+        self.published.append(message)
