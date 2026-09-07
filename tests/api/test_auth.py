@@ -107,3 +107,39 @@ async def test_a_correct_bearer_token_still_authenticates_over_http(harness: Api
             "/_test/event-token", headers={"Authorization": f"Bearer {EVENT_TOKEN}"}
         )
     assert response.status_code == 200
+
+
+async def test_ingest_without_an_api_key_is_401(harness: ApiHarness) -> None:
+    async with harness.client() as client:
+        response = await client.post(
+            "/v1/claims/ingest",
+            json={"bucket": "claims", "key": "tenants/tenant-a/claims/note-1.pdf"},
+            headers={"X-Tenant-Id": "tenant-a"},
+        )
+    assert response.status_code == 401
+
+
+async def test_ingest_with_a_wrong_api_key_is_401(harness: ApiHarness) -> None:
+    async with harness.client() as client:
+        response = await client.post(
+            "/v1/claims/ingest",
+            json={"bucket": "claims", "key": "tenants/tenant-a/claims/note-1.pdf"},
+            headers={"X-API-Key": "wrong", "X-Tenant-Id": "tenant-a"},
+        )
+    assert response.status_code == 401
+
+
+async def test_events_without_a_bearer_token_is_401(harness: ApiHarness) -> None:
+    async with harness.client() as client:
+        response = await client.post("/v1/events/s3", json={"Records": []})
+    assert response.status_code == 401
+
+
+async def test_events_with_the_api_key_instead_of_a_bearer_token_is_401(
+    harness: ApiHarness,
+) -> None:
+    async with harness.client() as client:
+        response = await client.post(
+            "/v1/events/s3", json={"Records": []}, headers={"X-API-Key": API_KEY}
+        )
+    assert response.status_code == 401

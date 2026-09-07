@@ -1,0 +1,29 @@
+{
+  "EventName": "s3:ObjectCreated:Put",
+  "Key": "claims/tenants/tenant-a/claims/note+with+spaces.pdf",
+  "Records": [
+    {
+      "eventVersion": "2.0",
+      "eventSource": "minio:s3",
+      "awsRegion": "",
+      "eventTime": "2026-09-06T12:00:00.000Z",
+      "eventName": "s3:ObjectCreated:Put",
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "configurationId": "Config",
+        "bucket": {
+          "name": "claims",
+          "ownerIdentity": { "principalId": "minioadmin" },
+          "arn": "arn:aws:s3:::claims"
+        },
+        "object": {
+          "key": "tenants/tenant-a/claims/note+with+spaces.pdf",
+          "size": 24512,
+          "eTag": "b1946ac92492d2347c6235b4d2611184",
+          "contentType": "application/pdf",
+          "sequencer": "17F0A3B0C1D2E3F4"
+        }
+      }
+    }
+  ]
+}
