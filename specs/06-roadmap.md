@@ -32,6 +32,7 @@ Done when: `make migrate && make seed` loads 4 tenants (one inactive) and 15 pol
 Specs: [postgres](03-infrastructure/postgres.md), [tenant seed](01-domain/tenant.md#4-seed).
 
 ## Phase 3 — Ingestion Path (API side)
+Plan: [`docs/plans/2026-09-06-phase-3-ingestion-path.md`](../docs/plans/2026-09-06-phase-3-ingestion-path.md).
 - Ports + fakes; [UC-02](02-use-cases/UC-02-redact-pii.md) / [UC-03](02-use-cases/UC-03-attach-tenant-policies.md) / [UC-04](02-use-cases/UC-04-run-deterministic-checks.md) / [UC-05](02-use-cases/UC-05-enqueue-evaluation.md) / [UC-09a](02-use-cases/UC-09-human-review.md#uc-09a-requesthumanreview) then [UC-01](02-use-cases/UC-01-ingest-claim-document.md). UC-09a lands here, not in Phase 4: UC-01's deterministic-`REJECT` branch opens the review task.
 - Adapters: MinIO storage, pypdf extractor, presidio redactor, RabbitMQ publisher.
 - FastAPI app: `/v1/events/s3`, `/v1/claims/ingest`, `/v1/claims/{id}`, `/readyz`, error mapping.
@@ -47,6 +48,7 @@ Specs: [UC-01](02-use-cases/UC-01-ingest-claim-document.md)–[UC-05](02-use-cas
 - [UC-06](02-use-cases/UC-06-evaluate-claim.md) / [UC-07](02-use-cases/UC-07-route-decision.md) / [UC-08](02-use-cases/UC-08-notify-client.md), reusing UC-09a from Phase 3; webhook httpx client; mock-client service.
 - Worker consumer, ack/nack classification, DLQ, graceful shutdown.
 - Carried from Phase 0: `mock-client` compose service (`services/mock-client/`, own Dockerfile).
+- Carried from Phase 3: the `claims.evaluate` topology, `declare_topology()` and the queue constants live in `infrastructure/queue/rabbitmq.py` — the consumer imports them rather than redeclaring. `RequestHumanReview` (UC-09a) already exists and is built per unit of work, not injected. `EvaluationMessage` is the frozen wire contract: a change to it is a `schema_version` bump, not an edit.
 - Carried from Phase 1: ICD-10 extraction in `domain/rules.py` is pattern-only and false-positives on clinical prose ("Vitamin B12", the "T12" vertebra); validate extracted codes against the catalogue Phase 2 seeded, read through `Icd10CodeRepository.known_codes()`. `T12` is itself a real code, so that one false positive survives — a note mentioning the T12 vertebra still looks like a diagnosis.
 - Carried from Phase 2: the seeded tenants' webhook URLs already point at `http://mock-client:8081/hooks/...` ([tenant seed](01-domain/tenant.md#4-seed)); this is the phase that makes that hostname resolve.
 Done when: full loop `PDF drop → webhook received by mock-client` with fake LLM; low-confidence note → `REVIEW_PENDING`.
@@ -55,6 +57,7 @@ Specs: [UC-06](02-use-cases/UC-06-evaluate-claim.md)–[UC-09](02-use-cases/UC-0
 ## Phase 5 — Human Review & Ops Endpoints
 - [UC-09b](02-use-cases/UC-09-human-review.md#uc-09b-listopenreviews) / [UC-09c](02-use-cases/UC-09-human-review.md#uc-09c-resolvereview), `/v1/reviews*`, `/v1/claims/{id}/retry-notify`, `ecet dlq-replay`.
 - Real vendor run behind env flag; record one real evaluation output as fixture.
+- Carried from Phase 3: a publish failure leaves the claim `POLICIES_ATTACHED` with no retry path yet, and `ClaimView` omits the redacted text that UC-09b needs.
 Done when: resolving review triggers webhook `decided_by=human`.
 Specs: [UC-09](02-use-cases/UC-09-human-review.md), [api](04-interfaces/api.md).
 
@@ -62,6 +65,7 @@ Specs: [UC-09](02-use-cases/UC-09-human-review.md), [api](04-interfaces/api.md).
 - structlog + redaction guard, metrics, `claims_by_status` gauge, optional Prometheus/Grafana profile.
 - E2E test suite; README rewrite: diagrams (workflow + integration), ADR section, quickstart verified < 2 min after image cached, cost-saving numbers from metrics.
 - Carried from Phase 0: `/metrics` server + worker container healthcheck against it; CI `e2e` job (`pytest -m e2e`); close the uvicorn logging seam — `cli.py api` passes `log_config=None`, so `uvicorn.error`/`uvicorn.access` records go to the stdlib root handler and bypass the structlog `drop_sensitive_fields` guard (ADR-001 backstop). Route uvicorn through structlog and assert it in a log-capture test.
+- Carried from Phase 3: no metric is emitted anywhere in the ingestion path (`ecet_ingest_seconds`, `ecet_pdf_extract_seconds`, `ecet_pii_redaction_seconds`, `ecet_pii_entities_total`, `ecet_deterministic_verdict_total`, `ecet_llm_calls_avoided_total`), and the UC-04 metrics hook is a comment; `request_id` is neither bound to the structlog context nor propagated to the queue as `x-request-id`; the README needs the ~1.5 GB image-size note, a `make spacy-model` mention, and a note that v1 auth is a static API key while production would use per-tenant keys or JWT; CI re-downloads the 590 MB spaCy model uncached on every `slow` run and `spacy download` resolves an unpinned model version — wants `actions/cache` keyed on a pinned version.
 Done when: README quickstart reproduces demo from clean clone.
 Specs: [observability](05-platform/observability.md), [testing](05-platform/testing.md).
 
@@ -118,6 +122,33 @@ Every deferral recorded in [`docs/plans/2026-09-06-phase-2-persistence.md`](../d
 | 5 | `known_codes()` reads the whole `icd10_codes` table per call (a `ponytail:` comment marks it); cache it in the caller if a per-claim path ever calls it | accepted unless it shows up hot |
 | 6 | The seeded tenants' webhook URLs point at `http://mock-client:8081/hooks/...`, and the `mock-client` compose service does not exist until Phase 4 | Phase 4 |
 | 7 | `ecet seed` gives no distinct error for a connection failure versus a bad statement | accepted, it is a dev-only command |
+
+## Carried over from Phase 3
+
+Every deferral recorded in [`docs/plans/2026-09-06-phase-3-ingestion-path.md`](../docs/plans/2026-09-06-phase-3-ingestion-path.md#deviations-from-spec-record-in-the-pr-description) and its progress ledger, with the phase that closes it. Each is also listed inline in its phase above.
+
+| # | Deferred in Phase 3 | Closed by |
+|---|---------------------|-----------|
+| 1 | A publish failure leaves the claim `POLICIES_ATTACHED` with no retry path (the outbox stays out of v1) | Phase 5 |
+| 2 | `ClaimView` omits the redacted text that UC-09b will need | Phase 5 |
+| 3 | No metrics anywhere in the ingestion path: `ecet_ingest_seconds`, `ecet_pdf_extract_seconds`, `ecet_pii_redaction_seconds`, `ecet_pii_entities_total`, `ecet_deterministic_verdict_total`, `ecet_llm_calls_avoided_total` are all unimplemented, and UC-04's metrics hook is a comment | Phase 6 |
+| 4 | `request_id` is neither bound to the structlog context nor propagated to the queue as `x-request-id` | Phase 6 |
+| 5 | README gaps: the ~1.5 GB image-size note, a `make spacy-model` mention, and a note that v1 auth is a static API key while production would use per-tenant keys or JWT | Phase 6 |
+| 6 | CI re-downloads the 590 MB spaCy model uncached on every `slow` run, and `spacy download` resolves an unpinned model version | Phase 6 — wants `actions/cache` keyed on a pinned version |
+| 7 | `infrastructure/queue/in_memory.py` and `infrastructure/pii/fake_redactor.py` from the layout spec were not built; `tests/fakes.py` covers both needs | accepted, permanent |
+| 8 | UC-01's spec sentence "wrap steps 5-11 so any unexpected exception sets a failure state" is not implementable as written: the state machine has no failure edge out of `EXTRACTED` or `POLICIES_ATTACHED`, and it contradicts the same spec's requirement that a publish failure LEAVE the claim `POLICIES_ATTACHED`. Two explicit failure paths ship instead; an unexpected mid-pipeline exception rolls back to the committed `RECEIVED` claim | accepted, permanent |
+| 9 | Alembic runs in a subprocess from the API lifespan, because `migrations/env.py` calls `asyncio.run`, which cannot nest in the running loop. The project root is resolved from the working directory, not `__file__` | accepted, permanent |
+| 10 | `ECET_AUTO_MIGRATE=true` also seeds, but only when `ECET_ENV=dev` | accepted, permanent |
+| 11 | The presidio adapter's ICD-10 span filter can suppress a `LOCATION` whose entire span is three alphanumerics — UK postcode outward codes (`E14`, `N19`) and route designators (`I95`); irrelevant for US prior-auth claims | accepted, permanent |
+| 12 | An entity straddling a `\n\n` chunk boundary is not redacted | accepted, permanent |
+| 13 | The presidio adapter test needs `en_core_web_lg` present locally (`make spacy-model`) | accepted, permanent |
+| 14 | `POST /v1/events/s3` treats an empty `eventName` as a creation event (fail-open) | accepted, permanent |
+| 15 | The UC-01 ADR-001 assertion checks the final stored claim, not every `claims.save` argument as the UC-01 spec's test list asks | accepted for now — test-coverage gap |
+| 16 | No test covers a duplicate whose original status is not `QUEUED`, nor one proving the duplicate check precedes the tenant lookup | accepted for now — test-coverage gap |
+| 17 | No test covers `ObjectStorage.head()` against a missing bucket | accepted for now — test-coverage gap |
+| 18 | The pdf-text-extractor spec's soft budget "5-page fixture extracts in <200 ms" has no test; no perf scaffolding exists in the repo | accepted for now — test-coverage gap |
+| 19 | `tests/adapters/test_migrations.py` hardcodes revision `'0001_initial'` and creates "an unknown revision" rather than a genuine behind-head state; `get_current_revision()` returning `None` on an unstamped database is untested | accepted for now — test-coverage gap |
+| 20 | A failure mid-`build_container` leaks the engine; `/readyz` with an empty probes map returns 200 | accepted for now — test-coverage gap |
 
 ## Deferred (explicitly out of v1)
 - OCR for scanned PDFs.

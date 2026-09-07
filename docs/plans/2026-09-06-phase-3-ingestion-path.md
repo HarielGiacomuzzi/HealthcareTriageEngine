@@ -4922,7 +4922,7 @@ git commit -m "feat(compose): minio webhook wiring, readyz healthcheck and the d
 - Consumes: the deviation list at the bottom of this plan.
 - Produces: a roadmap that carries every Phase 3 deferral into the phase that closes it.
 
-- [ ] **Step 1: Link the plan from the roadmap**
+- [x] **Step 1: Link the plan from the roadmap**
 
 Under `## Phase 3 — Ingestion Path (API side)`, add a `Plan:` line matching the Phase 2
 entry's shape:
@@ -4931,7 +4931,7 @@ entry's shape:
 Plan: [`docs/plans/2026-09-06-phase-3-ingestion-path.md`](../docs/plans/2026-09-06-phase-3-ingestion-path.md).
 ```
 
-- [ ] **Step 2: Add the Phase 3 carry-over table**
+- [x] **Step 2: Add the Phase 3 carry-over table**
 
 After the `## Carried over from Phase 2` table, add:
 
@@ -4954,7 +4954,7 @@ Every deferral recorded in [`docs/plans/2026-09-06-phase-3-ingestion-path.md`](.
 | 10 | `ECET_AUTO_MIGRATE=true` also seeds, but only when `ECET_ENV=dev`; a non-dev deploy with auto-migrate on migrates without seeding | accepted, deliberate |
 ```
 
-- [ ] **Step 3: Add the inline Phase 4/5/6 carry-over lines**
+- [x] **Step 3: Add the inline Phase 4/5/6 carry-over lines**
 
 In `## Phase 4`, append to the existing `- Carried from Phase 2:` block a new line:
 
@@ -4974,7 +4974,7 @@ In `## Phase 6`, append to the existing `- Carried from Phase 0:` block:
 - Carried from Phase 3: no metric is emitted anywhere in the ingestion path, and `request_id` is neither bound to the structlog context nor propagated to the queue as `x-request-id`.
 ```
 
-- [ ] **Step 4: Verify every roadmap link resolves**
+- [x] **Step 4: Verify every roadmap link resolves**
 
 ```bash
 uv run python - <<'PY'
@@ -4993,7 +4993,7 @@ PY
 
 Expected: `all links resolve`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add specs/06-roadmap.md docs/plans/2026-09-06-phase-3-ingestion-path.md
