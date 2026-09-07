@@ -152,6 +152,23 @@ async def test_one_failing_record_does_not_abort_the_batch(
     assert results[1]["result"]["status"] == "QUEUED"
 
 
+async def test_207_index_is_the_position_in_records_not_in_the_filtered_list(
+    harness: ApiHarness, event_headers: dict[str, str]
+) -> None:
+    harness.storage.put("claims", "tenants/tenant-a/claims/note-2.pdf", b"%PDF-1.7 y")
+    ignored_record = put_event(key="tenants/tenant-a/claims/notes.txt")["Records"][0]
+    first = put_event()["Records"][0]
+    second = put_event(key="tenants/tenant-a/claims/note-2.pdf", eTag="etag-2")["Records"][0]
+    envelope = {"Records": [ignored_record, first, second]}
+
+    async with harness.client() as client:
+        response = await client.post("/v1/events/s3", json=envelope, headers=event_headers)
+
+    assert response.status_code == 207
+    results = response.json()["results"]
+    assert [entry["index"] for entry in results] == [1, 2]
+
+
 async def test_an_unexpected_exception_on_one_record_does_not_abort_the_batch(
     harness: ApiHarness, event_headers: dict[str, str]
 ) -> None:

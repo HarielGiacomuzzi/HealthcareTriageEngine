@@ -99,7 +99,9 @@ async def receive_s3_event(envelope: S3EventEnvelope, container: ContainerDep) -
             status_code=400,
         )
 
-    actionable = [record for record in envelope.records if record.is_claim_pdf()]
+    # (original index in `envelope.records`, record) — the index a caller gets back
+    # must be the position they sent, not the position after filtering.
+    actionable = [(i, r) for i, r in enumerate(envelope.records) if r.is_claim_pdf()]
     ignored = len(envelope.records) - len(actionable)
     if not actionable:
         log.info("s3_event.ignored", ignored=ignored)
@@ -108,17 +110,18 @@ async def receive_s3_event(envelope: S3EventEnvelope, container: ContainerDep) -
     if len(actionable) == 1:
         # Let the error handlers map a failure to its status — the single-record case
         # is the one MinIO actually sends, and it wants a real status code.
-        result = await container.ingest.execute(actionable[0].to_command())
+        result = await container.ingest.execute(actionable[0][1].to_command())
         body: dict[str, Any] = result.model_dump(mode="json")
         if ignored:
             body["ignored"] = ignored
         return JSONResponse(body, status_code=200)
 
     results: list[dict[str, Any]] = []
-    for index, record in enumerate(actionable):
-        # Indexed, not the bucket: every record in a batch shares one bucket, so the
-        # bucket name identifies nothing, and it is attacker-controlled — the one
-        # client-supplied string that would otherwise reach a response body.
+    for index, record in actionable:
+        # Indexed by position in `Records`, not the bucket: every record in a batch
+        # shares one bucket, so the bucket name identifies nothing and is
+        # attacker-controlled — the one client-supplied string that would otherwise
+        # reach a response body.
         entry: dict[str, Any] = {"index": index}
         try:
             entry["result"] = (await container.ingest.execute(record.to_command())).model_dump(
