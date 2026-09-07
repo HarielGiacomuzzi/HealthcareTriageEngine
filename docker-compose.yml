@@ -56,16 +56,18 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz')"
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 40s
     deploy:
       resources:
         limits:
@@ -84,6 +86,35 @@ services:
       resources:
         limits:
           memory: 512M
+
+  minio-setup:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      ECET_S3_EVENT_TOKEN: ${ECET_S3_EVENT_TOKEN}
+    # One-shot. It depends on `api` being healthy because MinIO validates the webhook
+    # endpoint when the event is registered — an unreachable target fails `mc event add`.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb -p local/claims
+        mc admin config set local notify_webhook:ecet \
+          endpoint=http://api:8000/v1/events/s3 \
+          auth_token="$$ECET_S3_EVENT_TOKEN"
+        mc admin service restart local --json
+        sleep 5
+        mc event add local/claims arn:minio:sqs::ecet:webhook --event put --suffix .pdf
+        echo "minio notifications wired"
+    restart: "no"
 
 volumes:
   pgdata:
