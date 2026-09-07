@@ -15,7 +15,8 @@ Compose init container ([`minio-setup`](../05-platform/docker-compose.md#docker-
 mc alias set local http://minio:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
 mc mb -p local/claims
 mc admin config set local notify_webhook:ecet endpoint=http://api:8000/v1/events/s3 auth_token=$ECET_S3_EVENT_TOKEN
-mc admin service restart local
+mc admin service restart local --json
+sleep 5
 mc event add local/claims arn:minio:sqs::ecet:webhook --event put --suffix .pdf
 ```
 

@@ -32,6 +32,8 @@ def test_minio_setup_registers_the_webhook_and_the_event(compose: dict[str, Any]
     assert "/v1/events/s3" in script
     assert "mc event add" in script
     assert "--suffix .pdf" in script
+    assert "mc mb -p local/claims" in script
+    assert "auth_token=" in script
     assert setup["depends_on"]["api"]["condition"] == "service_healthy"
     assert setup["depends_on"]["minio"]["condition"] == "service_healthy"
 
