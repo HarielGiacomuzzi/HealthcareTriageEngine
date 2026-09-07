@@ -119,6 +119,10 @@ async def test_the_happy_path_queues_the_claim() -> None:
     assert stored.policy_ids
     assert stored.deterministic is not None
     assert len(harness.queue.published) == 1
+    # add+commit, save+commit before publish, then the outer execute() commit
+    # after `_run_pipeline` returns: a deleted `await uow.commit()` on any of
+    # the three legs would silently leave the claim unpersisted.
+    assert harness.uow.commits == 3
 
 
 async def test_the_persisted_claim_holds_redacted_text_only() -> None:
@@ -243,6 +247,9 @@ async def test_a_deterministic_reject_opens_a_review_and_skips_the_queue() -> No
     assert task.claim_id == result.claim_id
     assert task.reason is ReviewReason.DETERMINISTIC_REJECT
     assert task.status is ReviewStatus.OPEN
+    # add+commit, then the outer execute() commit after `_run_pipeline` returns —
+    # the REJECT branch itself saves but does not commit.
+    assert harness.uow.commits == 2
 
 
 async def test_an_uncertain_verdict_still_reaches_the_queue() -> None:

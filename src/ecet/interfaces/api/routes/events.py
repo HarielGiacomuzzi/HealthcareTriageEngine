@@ -10,8 +10,12 @@ setup but the S3 format allows many:
   "207-style".)
 
 Anything that is not an `ObjectCreated:*` event on a `.pdf` key answers 200 and is
-counted as ignored: MinIO retries non-2xx, and retrying a delete notification forever
-helps nobody.
+counted as ignored. The compose webhook target sets no `queue_dir`, so MinIO's
+notification target is not persistent: a failed delivery is logged and dropped, not
+retried. A 200 here is still the right answer for a non-claim event (a delete
+notification has nothing to re-send), but the same non-persistence means a genuine
+4xx on an actionable event loses it silently — see the module docstring in
+`errors.py` and the Phase 3 carry-over list for that consequence.
 """
 
 from typing import Any

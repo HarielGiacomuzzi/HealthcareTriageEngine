@@ -3,8 +3,10 @@
 The rule that shapes this file: **`detail` is a constant, never the exception's
 message.** `InvalidObjectKey` and `ObjectNotFound` both embed the client-supplied
 object key, which carries a filename that may itself be PII. The message still goes
-to the log, where the redaction guard and access controls apply; it does not go to
-the client.
+to the log — deliberately, as the audit sink that makes an error diagnosable — but
+under the `message` key, which the redaction guard does not cover (it matches on
+key names only: `text`, `raw_text`, `redacted_text`, `webhook_secret`, `api_key`).
+It does not go to the client.
 """
 
 from typing import NamedTuple
@@ -104,6 +106,8 @@ def register_error_handlers(app: FastAPI) -> None:
         problem = problem_for(error)
         claim_id = getattr(error, "claim_id", None)
         # The message is logged, not returned: it may embed a client-supplied filename.
+        # That filename is not covered by the redaction guard (key-name match only,
+        # not `message`) — logging it here is deliberate, not an oversight.
         log.warning(
             "api.domain_error",
             error=type(error).__name__,

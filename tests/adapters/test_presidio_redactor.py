@@ -10,6 +10,7 @@ from tests.pii import assert_no_pii, read_note
 from ecet.application.redaction_policy import (
     CUSTOM_PATTERNS,
     ENTITY_REPLACEMENTS,
+    KEPT_ENTITIES,
     SCORE_THRESHOLD,
 )
 from ecet.infrastructure.pii.presidio_redactor import (
@@ -69,6 +70,16 @@ async def test_dates_of_service_are_kept(redactor: PresidioPiiRedactor) -> None:
     result = await redactor.redact("Date of service: 2026-08-14. Follow-up in six weeks.")
 
     assert "2026-08-14" in result.text
+
+
+def test_kept_entities_are_never_in_the_analysed_entity_list(
+    redactor: PresidioPiiRedactor,
+) -> None:
+    # Ties KEPT_ENTITIES to the actual behaviour: DATE_TIME survives because it is
+    # never analysed, not because anything special consults this constant. If it
+    # were ever added to ENTITY_REPLACEMENTS, this fails alongside the constant's
+    # own premise going stale.
+    assert not KEPT_ENTITIES & set(redactor._entities)
 
 
 async def test_empty_text_is_not_an_error(redactor: PresidioPiiRedactor) -> None:

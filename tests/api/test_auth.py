@@ -1,8 +1,8 @@
 """Auth dependency coverage.
 
-`/v1/claims/ingest` and `/v1/events/s3` do not exist until Task 11 — the over-HTTP
-assertions that a wrong or missing credential 401s on those routes belong there.
-This file tests the dependencies themselves directly, which needs no routes.
+This file tests the dependencies themselves directly, which needs no routes. It also
+carries the over-HTTP assertions that a wrong or missing credential 401s on
+`/v1/claims/ingest` and `/v1/events/s3`.
 """
 
 import pytest
