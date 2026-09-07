@@ -8,6 +8,11 @@ an object without forging an S3 notification.
 has no tenant parameter, so the route compares the loaded claim's tenant against the
 `X-Tenant-Id` header and answers 404 — never 403 — on a mismatch: a 403 would confirm
 that the claim exists.
+
+`POST /v1/claims/ingest` checks no tenant header: the object key is the sole authority
+for which tenant a claim belongs to (`SourceObject.tenant_id()`), and v1 has a single
+global API key rather than a per-tenant one, so there is no tenant claim to check it
+against.
 """
 
 from datetime import datetime
@@ -17,8 +22,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
 
 from ecet.application.use_cases.ingest_claim_document import IngestCommand, IngestResult
-from ecet.domain.claim import Claim, ClaimStatus
-from ecet.domain.errors import ClaimNotFound
+from ecet.domain.claim import OBJECT_KEY_RE, Claim, ClaimStatus
+from ecet.domain.errors import ClaimNotFound, InvalidObjectKey
 from ecet.domain.evaluation import DeterministicResult, Evaluation
 from ecet.domain.ids import ClaimId, PolicyId
 from ecet.interfaces.api.dependencies import ContainerDep, TenantDep, require_api_key
@@ -68,6 +73,13 @@ class ClaimView(BaseModel):
 
 @router.post("/v1/claims/ingest")
 async def ingest_claim(body: ManualIngestRequest, container: ContainerDep) -> IngestResult:
+    # Validate the key layout before any I/O — matching UC-01's "both failures happen
+    # before any I/O". Skipping this would make the HEAD below an existence/size
+    # oracle over any bucket+key on the instance for a malformed key.
+    if OBJECT_KEY_RE.match(body.key) is None:
+        raise InvalidObjectKey(
+            f"expected tenants/{{tenant_id}}/claims/{{name}}.pdf, got {body.key!r}"
+        )
     head = await container.storage.head(body.bucket, body.key)
     return await container.ingest.execute(
         IngestCommand(bucket=body.bucket, key=body.key, etag=head.etag, size=head.size)

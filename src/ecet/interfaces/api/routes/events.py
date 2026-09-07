@@ -3,7 +3,8 @@
 Two response shapes, because MinIO sends one record per notification in the compose
 setup but the S3 format allows many:
 
-- one actionable record → the plain `IngestResult`, or the mapped error status;
+- one actionable record → the plain `IngestResult` (plus `ignored`, if any records
+  were skipped), or the mapped error status;
 - many → 207 with one entry per record, so a single bad object does not discard the
   good ones. (Not a real WebDAV multi-status body — the api spec calls it
   "207-style".)
@@ -22,7 +23,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ecet.application.use_cases.ingest_claim_document import IngestCommand
-from ecet.domain.errors import DomainError
 from ecet.interfaces.api.dependencies import ContainerDep, require_event_token
 
 log = structlog.get_logger(__name__)
@@ -30,6 +30,11 @@ log = structlog.get_logger(__name__)
 router = APIRouter(tags=["events"])
 
 CREATED_PREFIX = "s3:ObjectCreated:"
+
+#: MinIO's webhook has a 30 s timeout and retries any non-2xx response; a sequential,
+#: unbounded batch could blow past that budget under a bulk `mc mirror`. MinIO's own
+#: notifications are always one record per call, so this bound is generous, not tight.
+MAX_RECORDS = 100
 
 
 class S3Bucket(BaseModel):
@@ -60,8 +65,12 @@ class S3Record(BaseModel):
     s3: S3Payload
 
     def is_claim_pdf(self) -> bool:
+        # An absent `eventName` is treated as a creation event (fail-open, not
+        # fail-closed): an authenticated MinIO payload missing the field is still a
+        # real object drop in practice, and failing closed would silently stop
+        # ingestion if MinIO ever omitted it.
         created = not self.event_name or self.event_name.startswith(CREATED_PREFIX)
-        return created and self.decoded_key().lower().endswith(".pdf")
+        return created and self.decoded_key().endswith(".pdf")
 
     def decoded_key(self) -> str:
         """MinIO URL-encodes the key; spaces arrive as `+`."""
@@ -84,27 +93,40 @@ class S3EventEnvelope(BaseModel):
 
 @router.post("/v1/events/s3", dependencies=[Depends(require_event_token)])
 async def receive_s3_event(envelope: S3EventEnvelope, container: ContainerDep) -> JSONResponse:
+    if len(envelope.records) > MAX_RECORDS:
+        return JSONResponse(
+            {"detail": f"a notification may not carry more than {MAX_RECORDS} records"},
+            status_code=400,
+        )
+
     actionable = [record for record in envelope.records if record.is_claim_pdf()]
     ignored = len(envelope.records) - len(actionable)
     if not actionable:
-        log.info("s3_event.ignored", records=ignored)
+        log.info("s3_event.ignored", ignored=ignored)
         return JSONResponse({"ignored": ignored}, status_code=200)
 
     if len(actionable) == 1:
         # Let the error handlers map a failure to its status — the single-record case
         # is the one MinIO actually sends, and it wants a real status code.
         result = await container.ingest.execute(actionable[0].to_command())
-        return JSONResponse(result.model_dump(mode="json"), status_code=200)
+        body: dict[str, Any] = result.model_dump(mode="json")
+        if ignored:
+            body["ignored"] = ignored
+        return JSONResponse(body, status_code=200)
 
     results: list[dict[str, Any]] = []
-    for record in actionable:
-        entry: dict[str, Any] = {"bucket": record.s3.bucket.name}
+    for index, record in enumerate(actionable):
+        # Indexed, not the bucket: every record in a batch shares one bucket, so the
+        # bucket name identifies nothing, and it is attacker-controlled — the one
+        # client-supplied string that would otherwise reach a response body.
+        entry: dict[str, Any] = {"index": index}
         try:
             entry["result"] = (await container.ingest.execute(record.to_command())).model_dump(
                 mode="json"
             )
-        except DomainError as error:
-            # The class name only: the message embeds the client-supplied key.
+        except Exception as error:
+            # Any failure, not just a `DomainError` — an unexpected exception on one
+            # record must not discard results already committed for the others.
             entry["error"] = type(error).__name__
             log.warning("s3_event.record_failed", error=type(error).__name__)
         results.append(entry)

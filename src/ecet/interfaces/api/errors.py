@@ -13,6 +13,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from pydantic_core import ValidationError
 
 from ecet.application.errors import ExtractionFailed, ObjectNotFound, QueuePublishError
 from ecet.domain.errors import (
@@ -48,6 +49,15 @@ class ProblemDetails(BaseModel):
 
 
 UNKNOWN = Problem(500, "Internal error", "The request could not be completed.")
+
+#: A domain model built by hand from client input (e.g. `SourceObject` from an S3
+#: event record) raises `pydantic_core.ValidationError`, not a `DomainError` — it
+#: never runs through FastAPI's own request-body validation, so FastAPI's
+#: `RequestValidationError` handling (422s) never sees it. Left unmapped it falls
+#: through to the catch-all as a 500 that MinIO retries forever.
+INVALID_OBJECT = Problem(
+    400, "Invalid object", "The object does not have a valid bucket, key, etag and size."
+)
 
 PROBLEMS: dict[type[DomainError], Problem] = {
     InvalidObjectKey: Problem(
@@ -132,5 +142,24 @@ def register_error_handlers(app: FastAPI) -> None:
             media_type=PROBLEM_MEDIA_TYPE,
         )
 
+    async def handle_invalid_object(request: Request, error: Exception) -> JSONResponse:
+        log.warning(
+            "api.invalid_object",
+            error=type(error).__name__,
+            message=str(error),
+            path=request.url.path,
+        )
+        return JSONResponse(
+            ProblemDetails(
+                type="https://ecet.invalid/problems/InvalidObject",
+                title=INVALID_OBJECT.title,
+                status=INVALID_OBJECT.status,
+                detail=INVALID_OBJECT.detail,
+            ).model_dump(exclude_none=True),
+            status_code=INVALID_OBJECT.status,
+            media_type=PROBLEM_MEDIA_TYPE,
+        )
+
     app.add_exception_handler(DomainError, handle)
+    app.add_exception_handler(ValidationError, handle_invalid_object)
     app.add_exception_handler(Exception, handle_unmapped)

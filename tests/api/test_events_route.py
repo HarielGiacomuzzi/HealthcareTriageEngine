@@ -5,6 +5,7 @@ from typing import Any
 from tests.api.conftest import ApiHarness
 
 from ecet.domain.claim import ClaimStatus
+from ecet.interfaces.api.routes.events import MAX_RECORDS
 
 EVENTS_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "s3_events"
 
@@ -130,6 +131,9 @@ async def test_multiple_records_answer_207_with_one_result_each(
     results = response.json()["results"]
     assert len(results) == 2
     assert all(entry["result"]["status"] == "QUEUED" for entry in results)
+    # Indexed, not the shared (and attacker-controlled) bucket name.
+    assert [entry["index"] for entry in results] == [0, 1]
+    assert all("bucket" not in entry for entry in results)
 
 
 async def test_one_failing_record_does_not_abort_the_batch(
@@ -146,3 +150,98 @@ async def test_one_failing_record_does_not_abort_the_batch(
     results = response.json()["results"]
     assert results[0]["error"] == "ExtractionFailed"
     assert results[1]["result"]["status"] == "QUEUED"
+
+
+async def test_an_unexpected_exception_on_one_record_does_not_abort_the_batch(
+    harness: ApiHarness, event_headers: dict[str, str]
+) -> None:
+    # eTag "" fails `SourceObject`'s `min_length=1` with a pydantic ValidationError,
+    # not a DomainError — exactly the shape a bug elsewhere in the pipeline would take.
+    bad = put_event(eTag="")
+    good = put_event(key="tenants/tenant-a/claims/note-2.pdf", eTag="etag-2")
+    harness.storage.put("claims", "tenants/tenant-a/claims/note-2.pdf", b"%PDF-1.7 y")
+    envelope = {"Records": [bad["Records"][0], good["Records"][0]]}
+
+    async with harness.client() as client:
+        response = await client.post("/v1/events/s3", json=envelope, headers=event_headers)
+
+    assert response.status_code == 207
+    results = response.json()["results"]
+    assert results[0]["error"] == "ValidationError"
+    assert results[1]["result"]["status"] == "QUEUED"
+
+
+async def test_a_record_with_zero_size_is_400_not_500(
+    harness: ApiHarness, event_headers: dict[str, str]
+) -> None:
+    async with harness.client() as client:
+        response = await client.post("/v1/events/s3", json=put_event(size=0), headers=event_headers)
+
+    assert response.status_code == 400
+
+
+async def test_a_record_with_a_missing_etag_is_400_not_500(
+    harness: ApiHarness, event_headers: dict[str, str]
+) -> None:
+    event = put_event()
+    del event["Records"][0]["s3"]["object"]["eTag"]
+
+    async with harness.client() as client:
+        response = await client.post("/v1/events/s3", json=event, headers=event_headers)
+
+    assert response.status_code == 400
+
+
+async def test_a_record_with_an_empty_etag_is_400_not_500(
+    harness: ApiHarness, event_headers: dict[str, str]
+) -> None:
+    async with harness.client() as client:
+        response = await client.post(
+            "/v1/events/s3", json=put_event(eTag=""), headers=event_headers
+        )
+
+    assert response.status_code == 400
+
+
+async def test_more_than_the_record_cap_is_400(
+    harness: ApiHarness, event_headers: dict[str, str]
+) -> None:
+    record = put_event()["Records"][0]
+    envelope = {"Records": [record] * (MAX_RECORDS + 1)}
+
+    async with harness.client() as client:
+        response = await client.post("/v1/events/s3", json=envelope, headers=event_headers)
+
+    assert response.status_code == 400
+
+
+async def test_an_uppercase_pdf_extension_is_ignored_not_400(
+    harness: ApiHarness, event_headers: dict[str, str]
+) -> None:
+    # The filter and `OBJECT_KEY_RE` must agree on case-sensitivity: before this fix
+    # the filter's `.lower()` let `NOTE-1.PDF` through as "actionable", and the
+    # domain's case-sensitive regex then 400'd it. Filtering it out up front (ignored,
+    # 200) is consistent with "not a claim pdf" rather than "a claim pdf we reject".
+    async with harness.client() as client:
+        response = await client.post(
+            "/v1/events/s3",
+            json=put_event(key="tenants/tenant-a/claims/NOTE-1.PDF"),
+            headers=event_headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"ignored": 1}
+
+
+async def test_malformed_request_body_still_gets_a_plain_422(
+    event_headers: dict[str, str], harness: ApiHarness
+) -> None:
+    # FastAPI's own request-body validation (`RequestValidationError`) is a distinct
+    # class from `pydantic_core.ValidationError` raised by hand inside a route — the
+    # new mapping for the latter must not interfere with the former.
+    async with harness.client() as client:
+        response = await client.post(
+            "/v1/events/s3", json={"Records": "not-a-list"}, headers=event_headers
+        )
+
+    assert response.status_code == 422
