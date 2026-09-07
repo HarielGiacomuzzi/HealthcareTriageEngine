@@ -143,12 +143,13 @@ Every deferral recorded in [`docs/plans/2026-09-06-phase-3-ingestion-path.md`](.
 | 12 | An entity straddling a `\n\n` chunk boundary is not redacted | accepted, permanent |
 | 13 | The presidio adapter test needs `en_core_web_lg` present locally (`make spacy-model`) | accepted, permanent |
 | 14 | `POST /v1/events/s3` treats an empty `eventName` as a creation event (fail-open) | accepted, permanent |
-| 15 | The UC-01 ADR-001 assertion checks the final stored claim, not every `claims.save` argument as the UC-01 spec's test list asks | accepted for now — test-coverage gap |
-| 16 | No test covers a duplicate whose original status is not `QUEUED`, nor one proving the duplicate check precedes the tenant lookup | accepted for now — test-coverage gap |
-| 17 | No test covers `ObjectStorage.head()` against a missing bucket | accepted for now — test-coverage gap |
-| 18 | The pdf-text-extractor spec's soft budget "5-page fixture extracts in <200 ms" has no test; no perf scaffolding exists in the repo | accepted for now — test-coverage gap |
-| 19 | `tests/adapters/test_migrations.py` hardcodes revision `'0001_initial'` and creates "an unknown revision" rather than a genuine behind-head state; `get_current_revision()` returning `None` on an unstamped database is untested | accepted for now — test-coverage gap |
-| 20 | A failure mid-`build_container` leaks the engine; `/readyz` with an empty probes map returns 200 | accepted for now — test-coverage gap |
+| 15 | `FAKE_REDACTOR_NAMES` carries a bare "Whitfield" entry no fixture exercises standalone — an untested defensive branch in the fake's name list | accepted for now — test-coverage gap |
+| 16 | The UC-01 ADR-001 assertion checks the final stored claim, not every `claims.save` argument as the UC-01 spec's test list asks | accepted for now — test-coverage gap |
+| 17 | No test covers a duplicate whose original status is not `QUEUED`, nor one proving the duplicate check precedes the tenant lookup | accepted for now — test-coverage gap |
+| 18 | No test covers `ObjectStorage.head()` against a missing bucket | accepted for now — test-coverage gap |
+| 19 | The pdf-text-extractor spec's soft budget "5-page fixture extracts in <200 ms" has no test; no perf scaffolding exists in the repo | accepted for now — test-coverage gap |
+| 20 | `tests/adapters/test_migrations.py` hardcodes revision `'0001_initial'` and creates "an unknown revision" rather than a genuine behind-head state; `get_current_revision()` returning `None` on an unstamped database is untested | accepted for now — test-coverage gap |
+| 21 | A failure mid-`build_container` leaks the engine; `/readyz` with an empty probes map returns 200 | accepted for now — test-coverage gap |
 
 ## Deferred (explicitly out of v1)
 - OCR for scanned PDFs.
