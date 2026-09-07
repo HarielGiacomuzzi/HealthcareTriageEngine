@@ -5,6 +5,11 @@ from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ecet.domain.ports.claim_repository import ClaimRepository
+from ecet.domain.ports.icd10_repository import Icd10CodeRepository
+from ecet.domain.ports.policy_repository import PolicyRepository
+from ecet.domain.ports.review_task_repository import ReviewTaskRepository
+from ecet.domain.ports.tenant_repository import TenantRepository
 from ecet.infrastructure.postgres.repositories import (
     PostgresClaimRepository,
     PostgresIcd10CodeRepository,
@@ -25,11 +30,16 @@ class SqlAlchemyUnitOfWork:
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.session: AsyncSession = session_factory()
-        self.tenants = PostgresTenantRepository(self.session)
-        self.policies = PostgresPolicyRepository(self.session)
-        self.icd10_codes = PostgresIcd10CodeRepository(self.session)
-        self.claims = PostgresClaimRepository(self.session)
-        self.review_tasks = PostgresReviewTaskRepository(self.session)
+        self.tenants: TenantRepository = PostgresTenantRepository(self.session)
+        self.policies: PolicyRepository = PostgresPolicyRepository(self.session)
+        self.icd10_codes: Icd10CodeRepository = PostgresIcd10CodeRepository(self.session)
+        # Kept concrete too: __aexit__ calls `clear_baseline`, which is not part of
+        # the `ClaimRepository` protocol — the public attribute stays protocol-typed
+        # so `SqlAlchemyUnitOfWork` structurally matches `UnitOfWork` (mypy checks
+        # Protocol attributes invariantly).
+        self._claims = PostgresClaimRepository(self.session)
+        self.claims: ClaimRepository = self._claims
+        self.review_tasks: ReviewTaskRepository = PostgresReviewTaskRepository(self.session)
 
     async def __aenter__(self) -> Self:
         return self
@@ -45,7 +55,7 @@ class SqlAlchemyUnitOfWork:
         try:
             await self.session.rollback()
         finally:
-            self.claims.clear_baseline()
+            self._claims.clear_baseline()
             await self.session.close()
 
     async def commit(self) -> None:

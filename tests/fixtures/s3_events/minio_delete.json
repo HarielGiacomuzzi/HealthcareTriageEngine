@@ -1,0 +1,12 @@
+{
+  "EventName": "s3:ObjectRemoved:Delete",
+  "Records": [
+    {
+      "eventName": "s3:ObjectRemoved:Delete",
+      "s3": {
+        "bucket": { "name": "claims" },
+        "object": { "key": "tenants/tenant-a/claims/note-1.pdf", "size": 0, "eTag": "" }
+      }
+    }
+  ]
+}

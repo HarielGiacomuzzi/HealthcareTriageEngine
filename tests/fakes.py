@@ -5,12 +5,17 @@ Phase 1 ships the four domain repository fakes. The application-port fakes
 that define those ports.
 """
 
-from collections.abc import Iterable
-from datetime import date, datetime
+import hashlib
+import re
+from collections.abc import Iterable, Sequence
+from datetime import date, datetime, timedelta
 from types import TracebackType
 from uuid import UUID
 
-from ecet.domain.claim import Claim, ClaimStatus
+from ecet.application.errors import ObjectNotFound
+from ecet.application.messages import EvaluationMessage
+from ecet.application.ports.object_storage import ObjectHead
+from ecet.domain.claim import Claim, ClaimStatus, RedactedText
 from ecet.domain.errors import (
     ClaimNotFound,
     ConcurrentModification,
@@ -183,3 +188,111 @@ class FakeUnitOfWork:
 
     async def commit(self) -> None:
         self.commits += 1
+
+
+class FixedClock:
+    """A clock that does not move unless a test moves it."""
+
+    def __init__(self, now: datetime) -> None:
+        self._now = now
+
+    def now(self) -> datetime:
+        return self._now
+
+    def advance(self, delta: timedelta) -> None:
+        self._now += delta
+
+
+class FakeObjectStorage:
+    def __init__(self, objects: dict[tuple[str, str], bytes] | None = None) -> None:
+        self.objects: dict[tuple[str, str], bytes] = dict(objects or {})
+        self.reads: list[tuple[str, str]] = []
+
+    def put(self, bucket: str, key: str, data: bytes) -> ObjectHead:
+        self.objects[(bucket, key)] = data
+        return self._head(data)
+
+    @staticmethod
+    def _head(data: bytes) -> ObjectHead:
+        # S3 etags for a single-part upload are the MD5 of the body; matching that
+        # keeps the fake's idempotency key shaped like the real one.
+        digest = hashlib.md5(data, usedforsecurity=False).hexdigest()
+        return ObjectHead(etag=digest, size=len(data))
+
+    async def get_bytes(self, bucket: str, key: str) -> bytes:
+        self.reads.append((bucket, key))
+        try:
+            return self.objects[(bucket, key)]
+        except KeyError:
+            raise ObjectNotFound(f"{bucket}/{key}") from None
+
+    async def head(self, bucket: str, key: str) -> ObjectHead:
+        return self._head(await self.get_bytes(bucket, key))
+
+
+class FakeTextExtractor:
+    """Returns a canned string, or raises a canned error. `calls` counts invocations."""
+
+    def __init__(self, text: str = "", *, error: Exception | None = None) -> None:
+        self.text = text
+        self.error = error
+        self.calls = 0
+
+    async def extract(self, pdf: bytes) -> str:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.text
+
+
+#: Names the regex fake cannot infer. Kept in step with `tests/pii.py`.
+FAKE_REDACTOR_NAMES: tuple[str, ...] = ("Marcus Whitfield", "Whitfield", "Alicia Ferreira")
+
+
+class FakePiiRedactor:
+    """Regex stand-in for presidio: deterministic, instant, no spaCy model.
+
+    Ordered so the specific patterns (MRN, member id) win before the generic phone
+    pattern. Names cannot be inferred by regex, so they are supplied explicitly —
+    the real engine is exercised in `tests/adapters/test_presidio_redactor.py`.
+    """
+
+    PATTERNS: tuple[tuple[str, str, str], ...] = (
+        ("EMAIL_ADDRESS", r"[\w.+-]+@[\w-]+\.[\w.]+", "<EMAIL>"),
+        ("US_SSN", r"\b\d{3}-\d{2}-\d{4}\b", "<SSN>"),
+        ("MRN", r"\bMRN[:# ]*\d{6,10}\b", "<MRN>"),
+        ("MEMBER_ID", r"\b[A-Z]{2,3}\d{7,10}\b", "<MEMBER_ID>"),
+        ("PHONE_NUMBER", r"\(?\b\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}\b", "<PHONE>"),
+    )
+
+    def __init__(self, names: Sequence[str] = FAKE_REDACTOR_NAMES) -> None:
+        self.names = list(names)
+        self.calls: list[int] = []
+
+    async def redact(self, text: str) -> RedactedText:
+        self.calls.append(len(text))
+        counts: dict[str, int] = {}
+        result = text
+        for name in sorted(self.names, key=len, reverse=True):
+            result, hits = re.subn(re.escape(name), "<PERSON>", result)
+            if hits:
+                counts["PERSON"] = counts.get("PERSON", 0) + hits
+        for entity, pattern, replacement in self.PATTERNS:
+            result, hits = re.subn(pattern, replacement, result)
+            if hits:
+                counts[entity] = counts.get(entity, 0) + hits
+        return RedactedText(text=result, entity_counts=counts, redactor="fake")
+
+
+class FakeEvaluationQueue:
+    """Records publishes. `error` makes the next publish fail, which is how UC-01's
+    'claim stays POLICIES_ATTACHED' branch is exercised."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.published: list[EvaluationMessage] = []
+        self.error = error
+
+    async def publish(self, message: EvaluationMessage) -> None:
+        if self.error is not None:
+            raise self.error
+        self.published.append(message)

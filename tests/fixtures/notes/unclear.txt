@@ -1,0 +1,17 @@
+Northwind Health Plan — Prior Authorization Request
+Patient: Marcus Whitfield
+Member ID: NWH2288341
+MRN: 4482910
+SSN: 123-45-6789
+Phone: (415) 555-0137
+Email: m.whitfield@example.com
+Referring provider: Alicia Ferreira, MD
+
+Date of service: 2026-08-14
+
+History: Ongoing back complaints, M54.5. Prior treatment described by the member as
+"some therapy last year", duration unclear and not documented in the chart. Exam
+findings are inconsistent between the two most recent visits.
+
+Requested service: MRI lumbar spine without contrast.
+Attached: illegible outside record.

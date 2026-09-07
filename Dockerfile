@@ -9,8 +9,12 @@ WORKDIR /app
 # Dependency layer first so source edits do not re-resolve the world.
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
+ARG SPACY_MODEL=en_core_web_lg
+RUN VIRTUAL_ENV=/opt/venv /opt/venv/bin/python -m spacy download ${SPACY_MODEL}
 COPY src/ ./src/
-RUN uv sync --frozen --no-dev --no-editable
+# --inexact: the final sync must not prune the spaCy model installed above — it lives
+# outside uv.lock, and a plain `uv sync` treats it as extraneous and removes it.
+RUN uv sync --frozen --no-dev --no-editable --inexact
 
 FROM python:3.12-slim AS runtime
 ENV PATH="/opt/venv/bin:$PATH" \
@@ -18,6 +22,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1
 RUN useradd --create-home --uid 1000 ecet
 COPY --from=builder /opt/venv /opt/venv
+# Fail the build, not the container start, if the model didn't survive into this image.
+RUN python -c "import en_core_web_lg"
 USER ecet
 WORKDIR /app
 COPY alembic.ini ./

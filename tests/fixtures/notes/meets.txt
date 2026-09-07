@@ -1,0 +1,18 @@
+Northwind Health Plan — Prior Authorization Request
+Patient: Marcus Whitfield
+Member ID: NWH2288341
+MRN: 4482910
+SSN: 123-45-6789
+Phone: (415) 555-0137
+Email: m.whitfield@example.com
+Referring provider: Alicia Ferreira, MD
+
+Date of service: 2026-08-14
+
+History: 47-year-old with chronic low back pain, M54.5, for eleven months.
+Completed a supervised conservative therapy course of nine weeks (physical therapy
+twice weekly plus NSAIDs) with no functional improvement. Straight leg raise
+positive on the right at 40 degrees. No red-flag findings.
+
+Requested service: MRI lumbar spine without contrast.
+Attached: therapist progress note, clinical examination note.

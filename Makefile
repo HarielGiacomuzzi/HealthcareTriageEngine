@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed
+.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model drop
 
 install:
 	uv sync
@@ -51,3 +51,12 @@ logs: .env
 
 ps: .env
 	docker compose ps
+
+fixtures:
+	uv run python scripts/make_fixtures.py
+
+spacy-model:
+	uv run python -m spacy download $(or $(SPACY_MODEL),en_core_web_lg)
+
+drop: fixtures
+	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf $(or $(TENANT),tenant-a)
