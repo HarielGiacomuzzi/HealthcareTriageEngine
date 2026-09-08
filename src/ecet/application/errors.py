@@ -16,6 +16,9 @@ __all__ = [
     "LLMTransientError",
     "ObjectNotFound",
     "QueuePublishError",
+    "WebhookError",
+    "WebhookPermanentError",
+    "WebhookTransientError",
 ]
 
 
@@ -52,3 +55,16 @@ class LLMPermanentError(LLMError):
 class LLMInvalidOutput(LLMError):
     """The vendor answered, but not with something `EvaluationOutput` accepts: no tool
     call, unparseable arguments, or a schema violation."""
+
+
+class WebhookError(DomainError):
+    """Base for every `WebhookClient` failure."""
+
+
+class WebhookTransientError(WebhookError):
+    """The tenant's endpoint was unreachable or answered 408/429/5xx on every attempt.
+    The claim goes `NOTIFY_FAILED`; an operator retries it (Phase 5)."""
+
+
+class WebhookPermanentError(WebhookError):
+    """The endpoint answered a 4xx that a retry would repeat verbatim."""

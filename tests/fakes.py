@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 from ecet.application.errors import ObjectNotFound
 from ecet.application.messages import EvaluationMessage, PolicySnapshot
+from ecet.application.notifications import ClientNotification
 from ecet.application.ports.llm_gateway import EvaluationRequest
 from ecet.application.ports.object_storage import ObjectHead
 from ecet.domain.claim import Claim, ClaimStatus, RedactedText
@@ -351,3 +352,17 @@ def build_evaluation_request(
         found_codes=list(found_codes),
         prompt_version=prompt_version,
     )
+
+
+class FakeWebhookClient:
+    """Records `(tenant, payload)` per delivery. `error` makes every delivery fail,
+    which is how the `NOTIFY_FAILED` branch is exercised."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.deliveries: list[tuple[Tenant, ClientNotification]] = []
+        self.error = error
+
+    async def deliver(self, tenant: Tenant, payload: ClientNotification) -> None:
+        if self.error is not None:
+            raise self.error
+        self.deliveries.append((tenant, payload))
