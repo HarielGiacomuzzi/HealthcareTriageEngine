@@ -198,7 +198,12 @@ class RabbitMqConsumer:
 
             try:
                 await self._handler(parsed)
-            except BaseException as error:
+            # `Exception`, not `BaseException`: a `CancelledError` must propagate.
+            # `stop()` closes the connection after `drain_timeout`, which cancels the
+            # in-flight callbacks — classifying that as DLQ would dead-letter a message
+            # the broker will happily redeliver on channel close, and would swallow the
+            # cancellation from the caller that asked for it.
+            except Exception as error:
                 requeue = self._should_requeue(error)
                 log.warning(
                     "queue.nacked",
