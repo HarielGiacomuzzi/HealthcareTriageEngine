@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from tests.fakes import FakeTenantRepository, FakeWebhookClient, FixedClock
+from tests.pii import assert_no_pii
 
 from ecet.application.errors import WebhookPermanentError, WebhookTransientError
 from ecet.application.notifications import ClientNotification
@@ -95,6 +96,7 @@ async def test_the_payload_carries_no_claim_text() -> None:
     )
 
     body = webhook.deliveries[0][1].model_dump_json()
+    assert_no_pii(body)
     assert "redacted_text" not in body
     assert "Patient <PERSON>" not in body
     assert "dev-hmac-tenant-a" not in body
