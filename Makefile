@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model drop
+.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model drop demo
 
 install:
 	uv sync
@@ -60,3 +60,23 @@ spacy-model:
 
 drop: fixtures
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf $(or $(TENANT),tenant-a)
+
+# `clean` removes the named volumes, including `rabbitdata`. That matters after a
+# topology change: `claims.evaluate` is declared with `x-queue-type: quorum`, and a
+# classic queue of the same name left in an old volume makes both the api and the
+# worker fail to start with PRECONDITION_FAILED.
+
+demo: fixtures up
+	@echo "waiting for the api to become ready..."
+	@until curl -sf localhost:8000/readyz >/dev/null; do sleep 2; done
+	@# `minio-setup` restarts MinIO to pick up the webhook target. Dropping before it
+	@# finishes either hits a refused connection or lands an object no event covers.
+	@echo "waiting for minio-setup to finish wiring notifications..."
+	@docker compose wait minio-setup
+	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf tenant-a
+	./scripts/demo_drop.sh tests/fixtures/pdfs/note_unclear.pdf tenant-a
+	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf tenant-empty || true
+	@sleep 5
+	docker compose logs --since 60s worker
+	@echo "--- webhooks received by the mock client ---"
+	curl -s localhost:8081/received | python -m json.tool

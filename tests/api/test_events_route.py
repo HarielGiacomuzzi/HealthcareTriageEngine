@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from tests.api.conftest import ApiHarness
+from tests.pii import assert_no_pii
 
 from ecet.domain.claim import ClaimStatus
 from ecet.interfaces.api.routes.events import MAX_RECORDS
@@ -262,3 +263,18 @@ async def test_malformed_request_body_still_gets_a_plain_422(
         )
 
     assert response.status_code == 422
+
+
+async def test_an_event_for_another_bucket_is_ignored(
+    harness: ApiHarness, event_headers: dict[str, str]
+) -> None:
+    event = put_event()
+    event["Records"][0]["s3"]["bucket"]["name"] = "not-claims"
+
+    async with harness.client() as client:
+        response = await client.post("/v1/events/s3", json=event, headers=event_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"ignored": 1}
+    assert harness.uow.claims.claims == {}
+    assert_no_pii(response.text)

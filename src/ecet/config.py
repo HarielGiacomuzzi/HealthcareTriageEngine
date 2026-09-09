@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     worker_prefetch: int = 4
 
     s3_endpoint: str | None = "http://minio:9000"
+    #: The one bucket this deployment ingests from. The api refuses any other bucket
+    #: rather than trusting the name in a client-supplied event.
+    s3_bucket: str = "claims"
     s3_access_key: SecretStr = SecretStr("minioadmin")
     s3_secret_key: SecretStr = SecretStr("minioadmin")
     s3_event_token: SecretStr
