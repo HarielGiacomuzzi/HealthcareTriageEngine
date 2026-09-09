@@ -13,6 +13,10 @@ that the claim exists.
 for which tenant a claim belongs to (`SourceObject.tenant_id()`), and v1 has a single
 global API key rather than a per-tenant one, so there is no tenant claim to check it
 against.
+
+`POST /v1/claims/ingest` and `POST /v1/events/s3` both refuse a bucket other than
+`ECET_S3_BUCKET`. Nothing else constrains which bucket a caller can name, and both
+paths otherwise read whatever they are told to.
 """
 
 from datetime import datetime
@@ -21,6 +25,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
 
+from ecet.application.errors import ObjectNotFound
 from ecet.application.use_cases.ingest_claim_document import IngestCommand, IngestResult
 from ecet.domain.claim import OBJECT_KEY_RE, Claim, ClaimStatus
 from ecet.domain.errors import ClaimNotFound, InvalidObjectKey
@@ -80,6 +85,10 @@ async def ingest_claim(body: ManualIngestRequest, container: ContainerDep) -> In
         raise InvalidObjectKey(
             f"expected tenants/{{tenant_id}}/claims/{{name}}.pdf, got {body.key!r}"
         )
+    if body.bucket != container.settings.s3_bucket:
+        # Same answer as a missing object, on purpose: naming a bucket that exists but
+        # is not ours must not be distinguishable from naming one that does not exist.
+        raise ObjectNotFound(f"{body.bucket}/{body.key}")
     head = await container.storage.head(body.bucket, body.key)
     return await container.ingest.execute(
         IngestCommand(bucket=body.bucket, key=body.key, etag=head.etag, size=head.size)

@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from tests.api.conftest import API_KEY, BUCKET, KEY, ApiHarness
+from tests.pii import assert_no_pii
 
 from ecet.domain.claim import ClaimStatus
 
@@ -121,3 +122,21 @@ async def test_manual_ingest_of_a_zero_byte_object_is_400_not_500(
         )
 
     assert response.status_code == 400
+
+
+async def test_manual_ingest_refuses_a_bucket_the_deployment_does_not_own(
+    harness: ApiHarness, api_headers: dict[str, str]
+) -> None:
+    # Without this the endpoint HEADs any bucket the caller names — a size/existence
+    # oracle over the whole MinIO instance, since v1 has one global API key.
+    async with harness.client() as client:
+        response = await client.post(
+            "/v1/claims/ingest",
+            json={"bucket": "someone-elses-bucket", "key": KEY},
+            headers=api_headers,
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "No object at that bucket and key."
+    assert harness.storage.reads == []
+    assert_no_pii(response.text)

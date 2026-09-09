@@ -23,10 +23,20 @@ services:
     volumes:
       - rabbitdata:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      # `docker exec` runs this as root, and `rabbitmq-diagnostics` creates
+      # $HOME/.erlang.cookie mode 0400 owned by the caller. On a fresh `rabbitdata`
+      # volume the probe can beat the booting server to it, leaving a root-owned
+      # cookie the server cannot read — it then exits 1 with `eacces`. Dropping to
+      # `rabbitmq` writes the cookie the server already expects.
+      # `ping` only says the Erlang node answers, which it does well before the AMQP
+      # listener binds — the api connects once at startup and exits 3 on a refusal, so
+      # "healthy" has to mean "accepting connections". `check_port_connectivity` does.
+      test: ["CMD", "gosu", "rabbitmq", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
       interval: 10s
-      timeout: 5s
+      # The diagnostics command itself takes several seconds on a loaded host.
+      timeout: 15s
       retries: 10
+      start_period: 60s
 
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
@@ -65,13 +75,40 @@ services:
         - -c
         - "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz')"
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 5
-      start_period: 40s
+      # Loading `en_core_web_lg` into Presidio dominates startup and takes well over a
+      # minute on a laptop building the rest of the stack at the same time. Failures
+      # inside `start_period` are not counted, so a generous value costs nothing when
+      # the host is fast and stops `worker` being abandoned when it is not.
+      start_period: 180s
     deploy:
       resources:
         limits:
           memory: 2G
+
+  mock-client:
+    build: services/mock-client
+    ports:
+      - "8081:8081"
+    environment:
+      # Matches the seeded tenants (see src/ecet/infrastructure/postgres/seed/tenants.sql).
+      # Dev HMAC keys, worthless outside compose.
+      MOCK_CLIENT_SECRETS: >-
+        {"northwind":"dev-hmac-tenant-a",
+         "cascade":"dev-hmac-tenant-b",
+         "harbor":"dev-hmac-tenant-empty",
+         "meridian":"dev-hmac-tenant-legacy"}
+      FAIL_FIRST_N: "0"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8081/healthz')"
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   worker:
     build: .
@@ -81,6 +118,12 @@ services:
       postgres:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      # The api owns migrations (ECET_AUTO_MIGRATE); a healthy api means the schema is
+      # at head, which is what `assert_at_head` in the worker container requires.
+      api:
+        condition: service_healthy
+      mock-client:
         condition: service_healthy
     deploy:
       resources:
@@ -109,7 +152,9 @@ services:
         mc mb -p local/claims
         mc admin config set local notify_webhook:ecet \
           endpoint=http://api:8000/v1/events/s3 \
-          auth_token="$$ECET_S3_EVENT_TOKEN"
+          auth_token="$$ECET_S3_EVENT_TOKEN" \
+          queue_dir=/data/.ecet-notify \
+          queue_limit=10000
         mc admin service restart local --json
         sleep 5
         mc event add local/claims arn:minio:sqs::ecet:webhook --event put --suffix .pdf

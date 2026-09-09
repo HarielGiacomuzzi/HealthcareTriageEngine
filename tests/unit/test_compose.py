@@ -40,3 +40,44 @@ def test_minio_setup_registers_the_webhook_and_the_event(compose: dict[str, Any]
 
 def test_the_api_waits_for_minio_too(compose: dict[str, Any]) -> None:
     assert "minio" in compose["services"]["api"]["depends_on"]
+
+
+def test_the_mock_client_is_built_and_exposed(compose: dict[str, Any]) -> None:
+    mock = compose["services"]["mock-client"]
+
+    assert mock["build"] == "services/mock-client"
+    assert "8081:8081" in mock["ports"]
+    assert "MOCK_CLIENT_SECRETS" in mock["environment"]
+
+
+def test_the_worker_waits_for_the_api_so_migrations_have_run(compose: dict[str, Any]) -> None:
+    # The worker never migrates; a healthy api is the signal that the schema is at head.
+    worker = compose["services"]["worker"]
+
+    assert worker["depends_on"]["api"]["condition"] == "service_healthy"
+    assert worker["depends_on"]["rabbitmq"]["condition"] == "service_healthy"
+
+
+def test_the_worker_can_reach_the_mock_client(compose: dict[str, Any]) -> None:
+    # The seeded tenants' webhook URLs point at http://mock-client:8081/hooks/...
+    assert "mock-client" in compose["services"]["worker"]["depends_on"]
+
+
+def test_the_minio_webhook_target_is_persistent(compose: dict[str, Any]) -> None:
+    # Phase 3 carry-over: without `queue_dir` MinIO's webhook target is fire-and-forget,
+    # so an event the api answered 4xx is gone — no claim row, no retry, no signal.
+    script = " ".join(compose["services"]["minio-setup"]["entrypoint"])
+
+    assert "queue_dir=" in script
+    assert "queue_limit=" in script
+
+
+def test_the_rabbitmq_healthcheck_does_not_run_as_root(compose: dict[str, Any]) -> None:
+    # `docker exec` runs a healthcheck as root, and `rabbitmq-diagnostics` creates
+    # $HOME/.erlang.cookie mode 0400 owned by whoever runs it. On a fresh volume the
+    # probe can win that race against the booting server, which then cannot read its
+    # own cookie and exits with `eacces`. Dropping to `rabbitmq` makes the probe write
+    # the cookie the server already expects.
+    probe = compose["services"]["rabbitmq"]["healthcheck"]["test"]
+
+    assert probe[:3] == ["CMD", "gosu", "rabbitmq"]

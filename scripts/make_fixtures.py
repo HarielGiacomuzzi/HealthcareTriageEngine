@@ -47,6 +47,12 @@ def build_all(destination: Path) -> dict[str, Path]:
     target.save()
     built["note_simple"] = simple
 
+    unclear = destination / "note_unclear.pdf"
+    target = canvas.Canvas(str(unclear), pagesize=LETTER)
+    _write_lines(target, _note_lines("unclear"))
+    target.save()
+    built["note_unclear"] = unclear
+
     multipage = destination / "note_multipage.pdf"
     target = canvas.Canvas(str(multipage), pagesize=LETTER)
     for note in ("meets", "does_not_meet", "unclear"):

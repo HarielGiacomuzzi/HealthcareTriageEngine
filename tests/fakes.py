@@ -10,10 +10,12 @@ import re
 from collections.abc import Iterable, Sequence
 from datetime import date, datetime, timedelta
 from types import TracebackType
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from ecet.application.errors import ObjectNotFound
-from ecet.application.messages import EvaluationMessage
+from ecet.application.messages import EvaluationMessage, PolicySnapshot
+from ecet.application.notifications import ClientNotification
+from ecet.application.ports.llm_gateway import EvaluationRequest
 from ecet.application.ports.object_storage import ObjectHead
 from ecet.domain.claim import Claim, ClaimStatus, RedactedText
 from ecet.domain.errors import (
@@ -22,7 +24,7 @@ from ecet.domain.errors import (
     ReviewTaskNotFound,
     TenantNotFound,
 )
-from ecet.domain.evaluation import ReviewStatus, ReviewTask
+from ecet.domain.evaluation import Decision, Evaluation, ReviewStatus, ReviewTask
 from ecet.domain.ids import ClaimId, PolicyId, TenantId
 from ecet.domain.policy import Icd10Code, Policy
 from ecet.domain.tenant import Tenant
@@ -296,3 +298,74 @@ class FakeEvaluationQueue:
         if self.error is not None:
             raise self.error
         self.published.append(message)
+
+
+class FakeLLMGateway:
+    """Records every request. Returns the canned evaluation, or raises the canned
+    error — the two branches UC-06 has to tell apart."""
+
+    def __init__(
+        self,
+        *,
+        evaluation: Evaluation | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.evaluation = evaluation or Evaluation(
+            decision=Decision.MEETS_NECESSITY,
+            confidence=0.91,
+            rationale="canned",
+            model="fake",
+            prompt_version="v1",
+        )
+        self.error = error
+        self.requests: list[EvaluationRequest] = []
+
+    async def evaluate(self, request: EvaluationRequest) -> Evaluation:
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        return self.evaluation
+
+    async def aclose(self) -> None:
+        """No-op: the port declares it, so the fake has to satisfy it."""
+
+
+def build_evaluation_request(
+    *,
+    redacted_text: str = "Patient <PERSON> with M54.5.",
+    policy_id: PolicyId | None = None,
+    found_codes: Sequence[str] = ("M54.5",),
+    prompt_version: str = "v1",
+) -> EvaluationRequest:
+    """A minimal, valid `EvaluationRequest` with exactly one policy."""
+    return EvaluationRequest(
+        claim_id=ClaimId(uuid4()),
+        redacted_text=redacted_text,
+        policies=[
+            PolicySnapshot(
+                id=policy_id if policy_id is not None else PolicyId(uuid4()),
+                name="MRI lumbar spine",
+                version=2,
+                covered_codes=["M54.5"],
+                excluded_codes=["Z00.00"],
+                criteria_text="Covered after six weeks of conservative therapy.",
+                required_evidence=["conservative therapy >= 6 weeks"],
+            )
+        ],
+        found_codes=list(found_codes),
+        prompt_version=prompt_version,
+    )
+
+
+class FakeWebhookClient:
+    """Records `(tenant, payload)` per delivery. `error` makes every delivery fail,
+    which is how the `NOTIFY_FAILED` branch is exercised."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.deliveries: list[tuple[Tenant, ClientNotification]] = []
+        self.error = error
+
+    async def deliver(self, tenant: Tenant, payload: ClientNotification) -> None:
+        if self.error is not None:
+            raise self.error
+        self.deliveries.append((tenant, payload))

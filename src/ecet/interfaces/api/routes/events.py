@@ -10,12 +10,14 @@ setup but the S3 format allows many:
   "207-style".)
 
 Anything that is not an `ObjectCreated:*` event on a `.pdf` key answers 200 and is
-counted as ignored. The compose webhook target sets no `queue_dir`, so MinIO's
-notification target is not persistent: a failed delivery is logged and dropped, not
-retried. A 200 here is still the right answer for a non-claim event (a delete
-notification has nothing to re-send), but the same non-persistence means a genuine
-4xx on an actionable event loses it silently — see the module docstring in
-`errors.py` and the Phase 3 carry-over list for that consequence.
+counted as ignored. The compose webhook target now sets `queue_dir`, so MinIO spools a
+failed delivery and retries it rather than dropping it; a genuine 4xx on an actionable
+event is therefore re-delivered, not lost. A 200 stays the right answer for a non-claim
+event — a delete notification has nothing worth re-sending.
+
+A record naming a bucket other than `ECET_S3_BUCKET` is counted as ignored, exactly
+like a non-`.pdf` key: the notification target is registered on one bucket, so anything
+else is either a misconfiguration or a forged payload, and neither deserves a claim.
 """
 
 from typing import Any
@@ -105,7 +107,12 @@ async def receive_s3_event(envelope: S3EventEnvelope, container: ContainerDep) -
 
     # (original index in `envelope.records`, record) — the index a caller gets back
     # must be the position they sent, not the position after filtering.
-    actionable = [(i, r) for i, r in enumerate(envelope.records) if r.is_claim_pdf()]
+    bucket = container.settings.s3_bucket
+    actionable = [
+        (i, r)
+        for i, r in enumerate(envelope.records)
+        if r.is_claim_pdf() and r.s3.bucket.name == bucket
+    ]
     ignored = len(envelope.records) - len(actionable)
     if not actionable:
         log.info("s3_event.ignored", ignored=ignored)
