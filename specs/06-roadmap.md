@@ -44,6 +44,7 @@ Done when: dropping fixture PDF in bucket → claim `QUEUED` in DB and message i
 Specs: [UC-01](02-use-cases/UC-01-ingest-claim-document.md)–[UC-05](02-use-cases/UC-05-enqueue-evaluation.md), [object-storage-minio](03-infrastructure/object-storage-minio.md), [pdf-text-extractor](03-infrastructure/pdf-text-extractor.md), [pii-redactor-presidio](03-infrastructure/pii-redactor-presidio.md), [queue-rabbitmq](03-infrastructure/queue-rabbitmq.md), [api](04-interfaces/api.md).
 
 ## Phase 4 — Evaluation Path (Worker side)
+Plan: [`docs/plans/2026-09-07-phase-4-evaluation-path.md`](../docs/plans/2026-09-07-phase-4-evaluation-path.md).
 - LLM port, fake gateway, OpenAI-compatible gateway, prompt v1.
 - [UC-06](02-use-cases/UC-06-evaluate-claim.md) / [UC-07](02-use-cases/UC-07-route-decision.md) / [UC-08](02-use-cases/UC-08-notify-client.md), reusing UC-09a from Phase 3; webhook httpx client; mock-client service.
 - Worker consumer, ack/nack classification, DLQ, graceful shutdown.
@@ -59,6 +60,7 @@ Specs: [UC-06](02-use-cases/UC-06-evaluate-claim.md)–[UC-09](02-use-cases/UC-0
 - [UC-09b](02-use-cases/UC-09-human-review.md#uc-09b-listopenreviews) / [UC-09c](02-use-cases/UC-09-human-review.md#uc-09c-resolvereview), `/v1/reviews*`, `/v1/claims/{id}/retry-notify`, `ecet dlq-replay`.
 - Real vendor run behind env flag; record one real evaluation output as fixture.
 - Carried from Phase 3: a publish failure leaves the claim `POLICIES_ATTACHED` with no retry path yet, and `ClaimView` omits the redacted text that UC-09b needs.
+- Carried from Phase 4: `POST /v1/claims/{id}/retry-notify` is the only exit from `NOTIFY_FAILED`, and `NOTIFY_FAILED -> APPROVED_AUTO | REVIEW_RESOLVED` is already in the state machine. `NotifyClient.execute(claim, outcome=..., confidence=1.0, decided_by="human")` is what UC-09c calls — it exists and is tested. The real-vendor run is the first time `ECET_LLM_PROVIDER=openai` talks to a live endpoint. Requeue has no delay (`RabbitMqConsumer._on_message` nacks with `requeue=True` for transient errors), so with `x-delivery-limit: 5` and `max_retries=0` in the OpenAI gateway a provider 429 burns the whole delivery budget in milliseconds and dead-letters the claim; `ecet dlq-replay` is this phase's recovery path for those.
 Done when: resolving review triggers webhook `decided_by=human`.
 Specs: [UC-09](02-use-cases/UC-09-human-review.md), [api](04-interfaces/api.md).
 
@@ -68,6 +70,7 @@ Specs: [UC-09](02-use-cases/UC-09-human-review.md), [api](04-interfaces/api.md).
 - Carried from Phase 0: `/metrics` server + worker container healthcheck against it; CI `e2e` job (`pytest -m e2e`); close the uvicorn logging seam — `cli.py api` passes `log_config=None`, so `uvicorn.error`/`uvicorn.access` records go to the stdlib root handler and bypass the structlog `drop_sensitive_fields` guard (ADR-001 backstop). Route uvicorn through structlog and assert it in a log-capture test.
 - Carried from Phase 3: no metric is emitted anywhere in the ingestion path (`ecet_ingest_seconds`, `ecet_pdf_extract_seconds`, `ecet_pii_redaction_seconds`, `ecet_pii_entities_total`, `ecet_deterministic_verdict_total`, `ecet_llm_calls_avoided_total`), and the UC-04 metrics hook is a comment; `request_id` is neither bound to the structlog context nor propagated to the queue as `x-request-id`; the README needs the ~1.5 GB image-size note, a `make spacy-model` mention, and a note that v1 auth is a static API key while production would use per-tenant keys or JWT; CI re-downloads the 590 MB spaCy model uncached on every `slow` run and `spacy download` resolves an unpinned model version — wants `actions/cache` keyed on a pinned version.
 - Carried from Phase 3 (small review gaps, none blocking): the fake redactor's bare `Whitfield` entry has no standalone fixture; UC-01's ADR-001 assertion checks only the final stored claim, not every `claims.save` argument; no test covers a duplicate whose original status is not `QUEUED`, one proving the duplicate check precedes the tenant lookup, `ObjectStorage.head()` against a missing bucket, or the pdf extractor's "5-page fixture under 200 ms" budget; `tests/adapters/test_migrations.py` hardcodes revision `'0001_initial'` and never exercises an unstamped database; a failure mid-`build_container` leaks the engine, and `/readyz` with an empty probes map returns 200. Three naming fixes belong here too: UC-01 raises `ExtractionFailed("empty_text")` while the pypdf adapter raises `"no_text"` for the same condition and `empty_text` is absent from the token list in `application/errors.py`; `failure_reason` for `NO_POLICIES` is the bare tenant slug instead of a short token; `handle_unmapped` logs no `claim_id`, which [api](04-interfaces/api.md) requires.
+- Carried from Phase 4: no metric is emitted on the worker path either (`ecet_llm_calls_total`, `ecet_llm_latency_seconds`, `ecet_llm_tokens_total`, `ecet_triage_route_total`, `ecet_webhook_attempts_total`), and the worker still has no `/metrics` server, so its compose healthcheck is still missing. The README needs the note that the mock client verifies the HMAC but not the timestamp's freshness, and that `make clean` is required after a queue-topology change.
 Done when: README quickstart reproduces demo from clean clone.
 Specs: [observability](05-platform/observability.md), [testing](05-platform/testing.md).
 
@@ -157,6 +160,23 @@ Every deferral recorded in [`docs/plans/2026-09-06-phase-3-ingestion-path.md`](.
 | 24 | `failure_reason` for `NO_POLICIES` is the bare tenant slug (`str(NoPoliciesForTenant)`), so operators read `failure_reason: "tenant-a"` rather than a reason — breaking the short-token convention the same module sets for `EXTRACTION_FAILED` | Phase 6 |
 | 25 | `RabbitMqEvaluationQueue.is_healthy` returns True during an aio-pika robust reconnect (`is_closed` stays False while it retries), so `/readyz` can report the queue healthy when publishes would fail — and the compose healthcheck gates `minio-setup` on `/readyz` | Phase 4 |
 | 26 | `handle_unmapped` logs no `claim_id`, while [api](04-interfaces/api.md) requires "Unhandled → 500, logged with `claim_id` if known"; the mapped handler does it, the catch-all does not | Phase 6 |
+
+## Carried over from Phase 4
+
+Every deferral recorded in [`docs/plans/2026-09-07-phase-4-evaluation-path.md`](../docs/plans/2026-09-07-phase-4-evaluation-path.md#deviations-from-spec-record-in-the-pr-description), with the phase that closes it. Each is also listed inline in its phase above.
+
+| # | Deferred in Phase 4 | Closed by |
+|---|---------------------|-----------|
+| 1 | No metric is emitted anywhere on the worker path: `ecet_llm_calls_total`, `ecet_llm_latency_seconds`, `ecet_llm_tokens_total`, `ecet_triage_route_total`, `ecet_webhook_attempts_total` are all unimplemented, and the worker has no `/metrics` server and therefore still no container healthcheck | Phase 6 |
+| 2 | `infrastructure/webhook/fake_client.py` and `infrastructure/queue/in_memory.py` from the layout spec are still not built; `tests/fakes.py` covers both | accepted, permanent |
+| 3 | UC-06 commits once, after routing: a webhook delivered but not committed is re-delivered on redelivery. At-least-once is the queue's contract and the payload is idempotent by `claim_id` | accepted, permanent |
+| 4 | The adapter tests use `httpx.MockTransport` rather than `respx` | accepted, permanent |
+| 5 | The vendor adapter is never exercised against a live endpoint; `ECET_LLM_PROVIDER=openai` is untested outside a mock transport | Phase 5 (real vendor run behind an env flag) |
+| 6 | The mock client verifies a signature but not the timestamp's freshness, so a captured delivery replays forever | accepted — it is a demo receiver, and the note belongs in the README |
+| 7 | `EvaluationOutput` accepts a missing `confidence` and degrades to `INSUFFICIENT_EVIDENCE`, but the tool schema still marks it required — a server that omits it is silently downgraded rather than reported | accepted, deliberate |
+| 8 | A `NOTIFY_FAILED` claim has no retry path: `POST /v1/claims/{id}/retry-notify` is Phase 5 | Phase 5 |
+| 9 | The worker depends on a healthy api in compose so migrations have run, rather than waiting for head itself; a worker restarted alone against a behind-head database exits | accepted, deliberate |
+| 10 | Requeue has no delay: `RabbitMqConsumer._on_message` nacks with `requeue=True` for transient errors, which triggers immediate redelivery. With `x-delivery-limit: 5` and `max_retries=0` in the OpenAI gateway, a provider 429 burns the whole delivery budget in a fraction of a second and dead-letters the claim, with no recovery path until `ecet dlq-replay` exists | Phase 5, alongside the real-vendor run |
 
 ## Deferred (explicitly out of v1)
 - OCR for scanned PDFs.

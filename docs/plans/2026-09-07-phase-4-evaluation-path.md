@@ -58,7 +58,7 @@
   - `ecet.infrastructure.llm.fake_gateway.FakeLlmGateway` (`MODEL: str`, `async evaluate(request) -> Evaluation`).
   - `tests.fakes.FakeLLMGateway` (records requests, returns a canned `Evaluation` or raises a canned error).
 
-- [ ] **Step 1: Write the failing port and output-model test**
+- [x] **Step 1: Write the failing port and output-model test**
 
 Create `tests/unit/application/test_llm_port.py`:
 
@@ -162,12 +162,12 @@ def test_an_evaluation_request_is_frozen() -> None:
         request.redacted_text = "mutated"  # type: ignore[misc]
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/application/test_llm_port.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ecet.application.ports.llm_gateway'`.
 
-- [ ] **Step 3: Add the LLM errors**
+- [x] **Step 3: Add the LLM errors**
 
 Append to `src/ecet/application/errors.py`, and extend `__all__` to
 `["ExtractionFailed", "LLMError", "LLMInvalidOutput", "LLMPermanentError", "LLMTransientError", "ObjectNotFound", "QueuePublishError"]`:
@@ -193,7 +193,7 @@ class LLMInvalidOutput(LLMError):
     call, unparseable arguments, or a schema violation."""
 ```
 
-- [ ] **Step 4: Write the port module**
+- [x] **Step 4: Write the port module**
 
 Create `src/ecet/application/ports/llm_gateway.py`:
 
@@ -306,7 +306,7 @@ class LLMGateway(Protocol):
         ...
 ```
 
-- [ ] **Step 5: Add `FakeLLMGateway` to `tests/fakes.py`**
+- [x] **Step 5: Add `FakeLLMGateway` to `tests/fakes.py`**
 
 Add the imports `from ecet.application.ports.llm_gateway import EvaluationRequest` and
 `from ecet.domain.evaluation import Decision, Evaluation, ReviewStatus, ReviewTask` (extend the
@@ -340,12 +340,12 @@ class FakeLLMGateway:
         return self.evaluation
 ```
 
-- [ ] **Step 6: Run the port test and watch it pass**
+- [x] **Step 6: Run the port test and watch it pass**
 
 Run: `uv run pytest tests/unit/application/test_llm_port.py -v`
 Expected: PASS (6 tests).
 
-- [ ] **Step 7: Write the failing prompt test**
+- [x] **Step 7: Write the failing prompt test**
 
 Create `tests/unit/application/test_prompt_v1.py`:
 
@@ -434,12 +434,12 @@ def test_an_empty_policy_list_still_renders() -> None:
     assert "none" in rendered.lower()
 ```
 
-- [ ] **Step 8: Run it and watch it fail**
+- [x] **Step 8: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/application/test_prompt_v1.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ecet.application.prompts'`.
 
-- [ ] **Step 9: Write the prompt module**
+- [x] **Step 9: Write the prompt module**
 
 Create an empty `src/ecet/application/prompts/__init__.py`, then create
 `src/ecet/application/prompts/evaluate_v1.py`:
@@ -544,12 +544,12 @@ def build_messages(request: EvaluationRequest) -> list[dict[str, str]]:
     ]
 ```
 
-- [ ] **Step 10: Run the prompt test and watch it pass**
+- [x] **Step 10: Run the prompt test and watch it pass**
 
 Run: `uv run pytest tests/unit/application/test_prompt_v1.py -v`
 Expected: PASS (5 tests).
 
-- [ ] **Step 11: Write the failing fake-gateway test**
+- [x] **Step 11: Write the failing fake-gateway test**
 
 Create `tests/unit/infrastructure/test_fake_gateway.py`:
 
@@ -615,7 +615,7 @@ async def test_the_vendor_metadata_is_filled_in() -> None:
     assert [code.code for code in evaluation.cited_codes] == request.found_codes
 ```
 
-- [ ] **Step 12: Add the shared request builder to `tests/fakes.py`**
+- [x] **Step 12: Add the shared request builder to `tests/fakes.py`**
 
 Append to `tests/fakes.py` (it is imported by four test modules in this phase, so it
 lives with the fakes rather than being copied into each):
@@ -654,12 +654,12 @@ Move the `uuid4` import to the module's import block (`from uuid import UUID, uu
 than leaving it inside the function, and add `from ecet.application.messages import
 EvaluationMessage, PolicySnapshot` to the existing messages import.
 
-- [ ] **Step 13: Run it and watch it fail**
+- [x] **Step 13: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/infrastructure/test_fake_gateway.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ecet.infrastructure.llm'`.
 
-- [ ] **Step 14: Write the fake gateway**
+- [x] **Step 14: Write the fake gateway**
 
 Create an empty `src/ecet/infrastructure/llm/__init__.py`, then create
 `src/ecet/infrastructure/llm/fake_gateway.py`:
@@ -739,12 +739,12 @@ class FakeLlmGateway:
         )
 ```
 
-- [ ] **Step 15: Run the fake-gateway test and watch it pass**
+- [x] **Step 15: Run the fake-gateway test and watch it pass**
 
 Run: `uv run pytest tests/unit/infrastructure/test_fake_gateway.py tests/unit/application -v`
 Expected: PASS, no regressions in the existing application tests.
 
-- [ ] **Step 16: Check the layers, the types and the whole default suite**
+- [x] **Step 16: Check the layers, the types and the whole default suite**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -756,7 +756,7 @@ uv run pytest
 Expected: all green. `lint-imports` matters here — `application/prompts` must not have
 pulled anything forbidden in.
 
-- [ ] **Step 17: Commit**
+- [x] **Step 17: Commit**
 
 ```bash
 git add src/ecet/application/errors.py src/ecet/application/ports/llm_gateway.py \
@@ -787,7 +787,7 @@ git commit -m "feat(llm): gateway port, prompt v1 and the deterministic fake gat
   - `ecet.application.use_cases.notify_client.NotifyClient` — `__init__(tenants, webhook, clock)`, `async execute(claim, *, outcome: Decision, confidence: float, decided_by: DecidedBy) -> ClientNotification`.
   - `tests.fakes.FakeWebhookClient` — records `(tenant, payload)` pairs, optional canned error.
 
-- [ ] **Step 1: Write the failing UC-08 test**
+- [x] **Step 1: Write the failing UC-08 test**
 
 Create `tests/unit/application/test_notify_client.py`:
 
@@ -954,12 +954,12 @@ async def test_a_claim_with_no_evaluation_still_notifies() -> None:
     assert isinstance(payload, ClientNotification)
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/application/test_notify_client.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ecet.application.notifications'`.
 
-- [ ] **Step 3: Add the webhook errors**
+- [x] **Step 3: Add the webhook errors**
 
 Append to `src/ecet/application/errors.py`, and add the three names to `__all__`:
 
@@ -977,7 +977,7 @@ class WebhookPermanentError(WebhookError):
     """The endpoint answered a 4xx that a retry would repeat verbatim."""
 ```
 
-- [ ] **Step 4: Write the notification payload**
+- [x] **Step 4: Write the notification payload**
 
 Create `src/ecet/application/notifications.py`:
 
@@ -1019,7 +1019,7 @@ class ClientNotification(BaseModel):
     decided_at: datetime
 ```
 
-- [ ] **Step 5: Write the webhook port**
+- [x] **Step 5: Write the webhook port**
 
 Create `src/ecet/application/ports/webhook_client.py`:
 
@@ -1045,7 +1045,7 @@ class WebhookClient(Protocol):
         ...
 ```
 
-- [ ] **Step 6: Write UC-08**
+- [x] **Step 6: Write UC-08**
 
 Create `src/ecet/application/use_cases/notify_client.py`:
 
@@ -1147,7 +1147,7 @@ def cast_outcome(decision: Decision) -> Outcome:
     return outcome
 ```
 
-- [ ] **Step 7: Add `FakeWebhookClient` to `tests/fakes.py`**
+- [x] **Step 7: Add `FakeWebhookClient` to `tests/fakes.py`**
 
 Append:
 
@@ -1168,12 +1168,12 @@ class FakeWebhookClient:
 
 with `from ecet.application.notifications import ClientNotification` added to the imports.
 
-- [ ] **Step 8: Run it and watch it pass**
+- [x] **Step 8: Run it and watch it pass**
 
 Run: `uv run pytest tests/unit/application/test_notify_client.py -v`
 Expected: PASS (7 tests including both parametrised errors).
 
-- [ ] **Step 9: Check types and layers**
+- [x] **Step 9: Check types and layers**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -1184,7 +1184,7 @@ uv run pytest
 Expected: all green. `mypy --strict` is the real check on `cast_outcome`: a `match`
 without a fallthrough over a StrEnum is only exhaustive if every member is listed.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add src/ecet/application/errors.py src/ecet/application/notifications.py \
@@ -1206,7 +1206,7 @@ git commit -m "feat(notify): UC-08 NotifyClient, the client notification payload
 - Consumes: `ecet.domain.evaluation.triage`, `Route`, `ReviewReason`, `Verdict`; `ecet.application.use_cases.notify_client.NotifyClient` (Task 2); `ecet.application.use_cases.human_review.RequestHumanReview` (Phase 3); `ecet.application.ports.unit_of_work.UnitOfWork` (Phase 2).
 - Produces: `ecet.application.use_cases.route_decision.RouteDecision` — `__init__(*, uow: UnitOfWork, webhook: WebhookClient, clock: Clock, threshold: float)`, `async execute(claim: Claim) -> None`. It saves the claim through `uow.claims.save`; it does **not** commit.
 
-- [ ] **Step 1: Write the failing UC-07 test**
+- [x] **Step 1: Write the failing UC-07 test**
 
 Create `tests/unit/application/test_route_decision.py`:
 
@@ -1385,12 +1385,12 @@ async def test_routing_a_claim_with_no_evaluation_is_a_programming_error() -> No
         await route.execute(claim)
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/application/test_route_decision.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ecet.application.use_cases.route_decision'`.
 
-- [ ] **Step 3: Write UC-07**
+- [x] **Step 3: Write UC-07**
 
 Create `src/ecet/application/use_cases/route_decision.py`:
 
@@ -1505,12 +1505,12 @@ class RouteDecision:
         )
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `uv run pytest tests/unit/application/test_route_decision.py -v`
 Expected: PASS (8 tests).
 
-- [ ] **Step 5: Check types, layers and the whole default suite**
+- [x] **Step 5: Check types, layers and the whole default suite**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -1520,7 +1520,7 @@ uv run pytest
 ```
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ecet/application/use_cases/route_decision.py \
@@ -1540,7 +1540,7 @@ git commit -m "feat(routing): UC-07 RouteDecision with the confidence gate and t
 - Consumes: `ecet.application.messages.EvaluationMessage` (Phase 3, frozen), `ecet.application.ports.llm_gateway.LLMGateway` / `EvaluationRequest` (Task 1), `RouteDecision` (Task 3), `RequestHumanReview` (Phase 3), `ecet.domain.ports.icd10_repository.Icd10CodeRepository` (Phase 2).
 - Produces: `ecet.application.use_cases.evaluate_claim.EvaluateClaim` — `__init__(*, uow_factory: Callable[[], UnitOfWork], llm: LLMGateway, webhook: WebhookClient, clock: Clock, threshold: float, prompt_version: str)`, `async execute(message: EvaluationMessage) -> None`. Raising means "requeue"; returning means "ack".
 
-- [ ] **Step 1: Write the failing UC-06 test**
+- [x] **Step 1: Write the failing UC-06 test**
 
 Create `tests/unit/application/test_evaluate_claim.py`:
 
@@ -1779,12 +1779,12 @@ async def test_a_tenant_mismatch_between_message_and_claim_is_refused() -> None:
     assert uow.claims.claims[claim.id].status is ClaimStatus.QUEUED
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/application/test_evaluate_claim.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ecet.application.use_cases.evaluate_claim'`.
 
-- [ ] **Step 3: Write UC-06**
+- [x] **Step 3: Write UC-06**
 
 Create `src/ecet/application/use_cases/evaluate_claim.py`:
 
@@ -1942,12 +1942,12 @@ class EvaluateClaim:
         await uow.commit()
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `uv run pytest tests/unit/application/test_evaluate_claim.py -v`
 Expected: PASS (10 tests including both parametrised failures).
 
-- [ ] **Step 5: Check types, layers and the whole default suite**
+- [x] **Step 5: Check types, layers and the whole default suite**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -1958,7 +1958,7 @@ uv run pytest --cov=ecet --cov-report=term-missing
 Expected: all green; `src/ecet/application/use_cases/evaluate_claim.py` shows no
 uncovered branch other than the `raise` re-raise line's else path.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ecet/application/use_cases/evaluate_claim.py \
@@ -1982,7 +1982,7 @@ git commit -m "feat(worker): UC-06 EvaluateClaim with duplicate, tenant and vend
   - `ecet.infrastructure.llm.openai_gateway.PERMANENT_STATUS: frozenset[int]`.
   - `ecet.infrastructure.llm.factory.build_gateway(settings: Settings) -> LLMGateway`.
 
-- [ ] **Step 1: Add the dependencies**
+- [x] **Step 1: Add the dependencies**
 
 In `pyproject.toml`, add to `[project] dependencies` (keep the list alphabetical where it
 already is, otherwise append):
@@ -2007,7 +2007,7 @@ against the locked `httpx<0.28`, widen to `"openai>=1.60,<3"` and re-run — the
 only uses `chat.completions.create`, the exception classes and `usage`, which are
 stable across both majors.
 
-- [ ] **Step 2: Write the failing adapter test**
+- [x] **Step 2: Write the failing adapter test**
 
 Create `tests/unit/infrastructure/test_openai_gateway.py`:
 
@@ -2193,12 +2193,12 @@ async def test_a_hallucinated_policy_id_is_discarded() -> None:
     assert evaluation.matched_policy_id is None
 ```
 
-- [ ] **Step 3: Run it and watch it fail**
+- [x] **Step 3: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/infrastructure/test_openai_gateway.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ecet.infrastructure.llm.openai_gateway'`.
 
-- [ ] **Step 4: Write the adapter**
+- [x] **Step 4: Write the adapter**
 
 Create `src/ecet/infrastructure/llm/openai_gateway.py`:
 
@@ -2329,12 +2329,12 @@ def _parse(completion: Any) -> EvaluationOutput:
         raise LLMInvalidOutput(f"tool arguments rejected: {error.error_count()} problem(s)") from error
 ```
 
-- [ ] **Step 5: Run it and watch it pass**
+- [x] **Step 5: Run it and watch it pass**
 
 Run: `uv run pytest tests/unit/infrastructure/test_openai_gateway.py -v`
 Expected: PASS (all cases, including the eight parametrised status codes).
 
-- [ ] **Step 6: Write the failing factory test**
+- [x] **Step 6: Write the failing factory test**
 
 Create `tests/unit/infrastructure/test_llm_factory.py`:
 
@@ -2377,12 +2377,12 @@ def test_the_openai_provider_without_a_key_fails_at_settings_time() -> None:
         build_settings(llm_provider=LlmProvider.OPENAI)
 ```
 
-- [ ] **Step 7: Run it and watch it fail**
+- [x] **Step 7: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/infrastructure/test_llm_factory.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ecet.infrastructure.llm.factory'`.
 
-- [ ] **Step 8: Write the factory**
+- [x] **Step 8: Write the factory**
 
 Create `src/ecet/infrastructure/llm/factory.py`:
 
@@ -2411,7 +2411,7 @@ def build_gateway(settings: Settings) -> LLMGateway:
             )
 ```
 
-- [ ] **Step 9: Run everything and check the layers**
+- [x] **Step 9: Run everything and check the layers**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -2423,7 +2423,7 @@ uv run pytest
 Expected: all green. `lint-imports` is the one that matters: `openai` and `httpx` must
 appear only under `ecet.infrastructure`.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add pyproject.toml uv.lock src/ecet/infrastructure/llm/openai_gateway.py \
@@ -2444,7 +2444,7 @@ git commit -m "feat(llm): OpenAI-compatible gateway adapter and the provider fac
 - Consumes: `ClientNotification` and `WebhookClient` (Task 2), `ecet.domain.tenant.Tenant`.
 - Produces: `ecet.infrastructure.webhook.httpx_client.HttpxWebhookClient` — `__init__(*, timeout_s: int, max_attempts: int = 3, backoff_seconds: Sequence[float] = (1.0, 4.0, 16.0), http_client: httpx.AsyncClient | None = None)`, `async deliver(tenant, payload) -> None`, `async aclose() -> None`; plus `sign(secret: bytes, timestamp: str, body: bytes) -> str` and `RETRY_STATUS: frozenset[int]`.
 
-- [ ] **Step 1: Write the failing adapter test**
+- [x] **Step 1: Write the failing adapter test**
 
 Create `tests/unit/infrastructure/test_httpx_webhook_client.py`:
 
@@ -2603,12 +2603,12 @@ async def test_a_transport_error_is_retried_then_transient() -> None:
     assert attempts == 3
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/infrastructure/test_httpx_webhook_client.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ecet.infrastructure.webhook'`.
 
-- [ ] **Step 3: Write the adapter**
+- [x] **Step 3: Write the adapter**
 
 Create an empty `src/ecet/infrastructure/webhook/__init__.py`, then create
 `src/ecet/infrastructure/webhook/httpx_client.py`:
@@ -2727,12 +2727,12 @@ class HttpxWebhookClient:
         raise WebhookTransientError(f"{self._max_attempts} attempts failed, last: {last}")
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `uv run pytest tests/unit/infrastructure/test_httpx_webhook_client.py -v`
 Expected: PASS (all cases including the nine parametrised statuses).
 
-- [ ] **Step 5: Check types, layers and the full default suite**
+- [x] **Step 5: Check types, layers and the full default suite**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -2742,7 +2742,7 @@ uv run pytest
 ```
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ecet/infrastructure/webhook tests/unit/infrastructure/test_httpx_webhook_client.py
@@ -2761,7 +2761,7 @@ git commit -m "feat(webhook): signed httpx delivery client with a bounded retry 
 - Consumes: nothing from `ecet` — it is a separate service with its own dependencies, and it must stay that way so the demo receiver cannot accidentally share the sender's signing code and prove nothing.
 - Produces: a FastAPI app on port 8081 with `POST /hooks/{name}` (verifies the signature, records the payload), `GET /received` (everything recorded), `DELETE /received` (reset, for repeat demos) and `GET /healthz`.
 
-- [ ] **Step 1: Write the failing receiver test**
+- [x] **Step 1: Write the failing receiver test**
 
 Create `tests/unit/test_mock_client.py`:
 
@@ -2910,13 +2910,13 @@ async def test_received_can_be_reset(monkeypatch: pytest.MonkeyPatch) -> None:
     assert listed.json() == []
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/test_mock_client.py -v`
 Expected: FAIL — the app path does not exist, so `spec_from_file_location` returns
 `None` and the `assert spec is not None` trips.
 
-- [ ] **Step 3: Write the receiver**
+- [x] **Step 3: Write the receiver**
 
 Create `services/mock-client/app.py`:
 
@@ -3034,12 +3034,12 @@ EXPOSE 8081
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8081"]
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `uv run pytest tests/unit/test_mock_client.py -v`
 Expected: PASS (5 tests).
 
-- [ ] **Step 5: Check the whole default suite**
+- [x] **Step 5: Check the whole default suite**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -3048,7 +3048,7 @@ uv run pytest
 Expected: green. `services/` is not part of the `ecet` package, so mypy and
 import-linter do not cover it; ruff does, and the file must satisfy it.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add services/mock-client tests/unit/test_mock_client.py
@@ -3075,7 +3075,7 @@ git commit -m "feat(mock-client): webhook receiver with signature verification a
   - `ecet.interfaces.worker.handler.AckAction` (`ACK`/`REQUEUE`/`DLQ`), `classify(error) -> AckAction`, `should_requeue(error) -> bool`, `WorkerMessageHandler` (`async handle(message) -> None`).
   - `ecet.interfaces.worker.container.WorkerContainer` + `async build_container(settings) -> WorkerContainer`.
 
-- [ ] **Step 1: Write the failing handler test**
+- [x] **Step 1: Write the failing handler test**
 
 Create an empty `tests/unit/interfaces/__init__.py`, then create
 `tests/unit/interfaces/test_worker_handler.py`:
@@ -3194,12 +3194,12 @@ def test_the_fake_gateway_import_stays_available_to_the_worker_tests() -> None:
     assert FakeLLMGateway() is not None
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/interfaces/test_worker_handler.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ecet.interfaces.worker.handler'`.
 
-- [ ] **Step 3: Write the handler**
+- [x] **Step 3: Write the handler**
 
 Create `src/ecet/interfaces/worker/handler.py`:
 
@@ -3294,12 +3294,12 @@ class WorkerMessageHandler:
         )
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `uv run pytest tests/unit/interfaces/test_worker_handler.py -v`
 Expected: PASS (all cases including the twelve parametrised errors).
 
-- [ ] **Step 5: Write the failing consumer test**
+- [x] **Step 5: Write the failing consumer test**
 
 Create `tests/adapters/test_rabbitmq_consumer.py`:
 
@@ -3464,12 +3464,12 @@ async def test_a_requeue_classified_failure_is_redelivered(
     assert len(attempts) >= 2
 ```
 
-- [ ] **Step 6: Run it and watch it fail**
+- [x] **Step 6: Run it and watch it fail**
 
 Run: `uv run pytest tests/adapters/test_rabbitmq_consumer.py -m slow -v`
 Expected: FAIL — `ImportError: cannot import name 'RabbitMqConsumer'`.
 
-- [ ] **Step 7: Extend the queue module**
+- [x] **Step 7: Extend the queue module**
 
 In `src/ecet/infrastructure/queue/rabbitmq.py`, change `declare_topology` to return both
 objects and add the consumer. Replace the existing `declare_topology` with:
@@ -3619,7 +3619,7 @@ class RabbitMqConsumer:
 with these imports added at the top of the module: `asyncio`, `contextlib`,
 `from collections.abc import Awaitable, Callable`, and `from pydantic import ValidationError`.
 
-- [ ] **Step 8: Fix the one existing caller of `declare_topology`**
+- [x] **Step 8: Fix the one existing caller of `declare_topology`**
 
 `tests/adapters/test_rabbitmq_queue.py` does not call it directly, so nothing there
 changes — but run it to be sure the publisher still declares the same topology:
@@ -3631,12 +3631,12 @@ Expected: PASS (4 tests). If `test_the_topology_is_declared_idempotently` fails 
 `PRECONDITION_FAILED`, a stale classic `claims.evaluate` is sitting in a reused
 `rabbitdata` volume — `make clean` and retry (Task 9 documents this).
 
-- [ ] **Step 9: Run the consumer test and watch it pass**
+- [x] **Step 9: Run the consumer test and watch it pass**
 
 Run: `uv run pytest tests/adapters/test_rabbitmq_consumer.py -m slow -v`
 Expected: PASS (4 tests). These need Docker.
 
-- [ ] **Step 10: Write the worker container and main**
+- [x] **Step 10: Write the worker container and main**
 
 Create `src/ecet/interfaces/worker/container.py`:
 
@@ -3773,7 +3773,7 @@ async def run(
         log.info("worker.stopped")
 ```
 
-- [ ] **Step 11: Run everything, including the slow suite**
+- [x] **Step 11: Run everything, including the slow suite**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -3785,7 +3785,7 @@ uv run pytest -m 'not e2e'   # needs Docker and `make spacy-model`
 ```
 Expected: all green.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add src/ecet/infrastructure/queue/rabbitmq.py src/ecet/interfaces/worker \
@@ -3811,7 +3811,7 @@ This task closes the two Phase 3 carry-overs the roadmap assigns to Phase 4 — 
 bucket check (#22) and `is_healthy` during a reconnect (#25, done in Task 8) — and makes
 `docker compose up` demonstrate the full path.
 
-- [ ] **Step 1: Write the failing bucket-guard tests**
+- [x] **Step 1: Write the failing bucket-guard tests**
 
 Append to `tests/api/test_claims_routes.py`:
 
@@ -3850,13 +3850,13 @@ async def test_an_event_for_another_bucket_is_ignored(
     assert harness.uow.claims.claims == {}
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `uv run pytest tests/api/test_claims_routes.py tests/api/test_events_route.py -v`
 Expected: FAIL — the manual-ingest test gets a 200 (it HEADs the fake storage), the
 event test gets a 200 with an `IngestResult` body rather than `{"ignored": 1}`.
 
-- [ ] **Step 3: Add the setting**
+- [x] **Step 3: Add the setting**
 
 In `src/ecet/config.py`, add below `s3_endpoint`:
 
@@ -3872,7 +3872,7 @@ In `.env.example`, add below `ECET_S3_ENDPOINT`:
 ECET_S3_BUCKET=claims
 ```
 
-- [ ] **Step 4: Guard the manual ingest route**
+- [x] **Step 4: Guard the manual ingest route**
 
 In `src/ecet/interfaces/api/routes/claims.py`, import `ObjectNotFound`
 (`from ecet.application.errors import ObjectNotFound`) and add the check before the HEAD:
@@ -3893,7 +3893,7 @@ Extend the module docstring with a sentence:
 paths otherwise read whatever they are told to.
 ```
 
-- [ ] **Step 5: Guard the event route**
+- [x] **Step 5: Guard the event route**
 
 In `src/ecet/interfaces/api/routes/events.py`, change the `actionable` filter so a
 record for another bucket is ignored rather than processed:
@@ -3915,13 +3915,13 @@ like a non-`.pdf` key: the notification target is registered on one bucket, so a
 else is either a misconfiguration or a forged payload, and neither deserves a claim.
 ```
 
-- [ ] **Step 6: Run the API suite and watch it pass**
+- [x] **Step 6: Run the API suite and watch it pass**
 
 Run: `uv run pytest tests/api -v`
 Expected: PASS, including the two new tests and every existing one (the fixtures use
 bucket `claims`, which is the default).
 
-- [ ] **Step 7: Write the failing compose test**
+- [x] **Step 7: Write the failing compose test**
 
 Append to `tests/unit/test_compose.py`:
 
@@ -3956,12 +3956,12 @@ def test_the_minio_webhook_target_is_persistent(compose: dict[str, Any]) -> None
     assert "queue_limit=" in script
 ```
 
-- [ ] **Step 8: Run it and watch it fail**
+- [x] **Step 8: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/test_compose.py -v`
 Expected: FAIL — `KeyError: 'mock-client'`.
 
-- [ ] **Step 9: Wire compose**
+- [x] **Step 9: Wire compose**
 
 In `docker-compose.yml`, add the `mock-client` service and extend `worker`:
 
@@ -4022,12 +4022,12 @@ Then replace the `worker` service's `depends_on` block with:
         condition: service_healthy
 ```
 
-- [ ] **Step 10: Run the compose test and watch it pass**
+- [x] **Step 10: Run the compose test and watch it pass**
 
 Run: `uv run pytest tests/unit/test_compose.py -v`
 Expected: PASS (7 tests).
 
-- [ ] **Step 11: Add the unclear fixture and the demo targets**
+- [x] **Step 11: Add the unclear fixture and the demo targets**
 
 In `scripts/make_fixtures.py`, add a single-note "unclear" PDF next to `note_simple`,
 inside `build_all` and before the multipage block:
@@ -4060,7 +4060,7 @@ demo: fixtures up
 	curl -s localhost:8081/received | python -m json.tool
 ```
 
-- [ ] **Step 12: Run the whole default suite and the checks**
+- [x] **Step 12: Run the whole default suite and the checks**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -4070,7 +4070,7 @@ uv run pytest
 ```
 Expected: all green.
 
-- [ ] **Step 13: Run the stack for real**
+- [x] **Step 13: Run the stack for real**
 
 ```bash
 make clean          # drops rabbitdata; see the note above
@@ -4090,7 +4090,7 @@ Expected, in order:
 If the worker exits at startup with an Alembic error, the api had not finished
 migrating — check `docker compose ps` shows `api` as healthy.
 
-- [ ] **Step 14: Commit**
+- [x] **Step 14: Commit**
 
 ```bash
 git add src/ecet/config.py .env.example src/ecet/interfaces/api/routes/claims.py \
@@ -4108,7 +4108,7 @@ git commit -m "feat(compose): mock-client service, bucket scoping and the end-to
 - Modify: `specs/06-roadmap.md`
 - Modify: `docs/plans/2026-09-07-phase-4-evaluation-path.md` (this file — tick the boxes)
 
-- [ ] **Step 1: Link the plan from the roadmap**
+- [x] **Step 1: Link the plan from the roadmap**
 
 Under `## Phase 4 — Evaluation Path (Worker side)`, add the plan link as the first line
 of the section, matching Phases 2 and 3:
@@ -4117,7 +4117,7 @@ of the section, matching Phases 2 and 3:
 Plan: [`docs/plans/2026-09-07-phase-4-evaluation-path.md`](../docs/plans/2026-09-07-phase-4-evaluation-path.md).
 ```
 
-- [ ] **Step 2: Add the Phase 4 carry-over table**
+- [x] **Step 2: Add the Phase 4 carry-over table**
 
 Append a `## Carried over from Phase 4` section to `specs/06-roadmap.md`, after the
 Phase 3 table, filled in from the "Deviations from spec" section at the bottom of this
@@ -4142,7 +4142,7 @@ Every deferral recorded in [`docs/plans/2026-09-07-phase-4-evaluation-path.md`](
 | 9 | The worker depends on a healthy api in compose so migrations have run, rather than waiting for head itself; a worker restarted alone against a behind-head database exits | accepted, deliberate |
 ```
 
-- [ ] **Step 3: Add the inline Phase 5 and Phase 6 carry-over lines**
+- [x] **Step 3: Add the inline Phase 5 and Phase 6 carry-over lines**
 
 In `## Phase 5`, append to the existing `- Carried from Phase 3:` block:
 
@@ -4156,7 +4156,7 @@ In `## Phase 6`, append:
 - Carried from Phase 4: no metric is emitted on the worker path either (`ecet_llm_calls_total`, `ecet_llm_latency_seconds`, `ecet_llm_tokens_total`, `ecet_triage_route_total`, `ecet_webhook_attempts_total`), and the worker still has no `/metrics` server, so its compose healthcheck is still missing. The README needs the note that the mock client verifies the HMAC but not the timestamp's freshness, and that `make clean` is required after a queue-topology change.
 ```
 
-- [ ] **Step 4: Verify every roadmap link resolves**
+- [x] **Step 4: Verify every roadmap link resolves**
 
 ```bash
 uv run python - <<'PY'
@@ -4176,7 +4176,7 @@ PY
 Expected: only the known false positive (`specs/01-domain/policy.md` matches the ICD-10
 regex `\.[0-9A-Z]{1,4}` as if it were a link).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add specs/06-roadmap.md docs/plans/2026-09-07-phase-4-evaluation-path.md
@@ -4218,3 +4218,5 @@ Add anything else that comes up, and drop anything that turns out not to be need
 12. **`declare_topology` now returns a `Topology(exchange, queue)` NamedTuple** rather than the bare exchange, so the consumer does not re-declare the queue with its own copy of `QUEUE_ARGUMENTS`. The publisher's one call site takes `.exchange`.
 13. **`WebhookTransientError` is classified DLQ, not requeue**, even though it is named "transient". UC-07 catches it and parks the claim in `NOTIFY_FAILED`; one reaching the consumer means a code path forgot to, and requeueing would re-run an LLM evaluation to retry an HTTP POST.
 14. **The `does_not_meet.txt` fixture evaluates as `MEETS_NECESSITY` under the fake gateway**, because the fake's rule table keys on the substring "denied" (per the [llm-gateway spec](../../specs/03-infrastructure/llm-gateway.md#fake_gatewaypy)) and that note does not contain it. The fixture exists for the deterministic path; the fake's rules are covered by their own table test.
+15. **Requeue has no delay, so the delivery budget is spent in milliseconds.** `RabbitMqConsumer._on_message` nacks with `requeue=True` for transient errors, which triggers immediate redelivery. With `x-delivery-limit: 5` on `claims.evaluate` and `max_retries=0` in the OpenAI gateway (which explicitly defers retrying to the message's own delivery budget), a provider 429 burns all five deliveries in a fraction of a second and dead-letters the claim. The retry mechanism the design chose therefore does not retry over any timescale a rate limit lives on, and with `ecet dlq-replay` deferred to Phase 5 those claims have no recovery path. Not fixed in Phase 4: a delayed-retry queue is a topology change and a plan-level redesign, and this phase ships with `ECET_LLM_PROVIDER=fake` everywhere while the vendor path is already deferred to Phase 5 by deviation 5. Closed by Phase 5, alongside the real-vendor run.
+16. **Four compose/Makefile timing fixes the plan did not specify** were needed to make `make demo` pass reliably: the rabbitmq healthcheck uses `gosu` plus `check_port_connectivity` (the root-owned `.erlang.cookie` race, and `ping` reporting healthy before the AMQP listener binds); the api healthcheck gets `start_period: 180s` (worker and minio-setup now gate on `api: service_healthy`, and a 40s start period marks api unhealthy mid-Presidio-load and abandons its dependents); `make demo` runs `docker compose wait minio-setup` before dropping (minio-setup restarts MinIO to pick up the webhook target, and a drop before it finishes produces no notification at all).
