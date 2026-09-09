@@ -104,3 +104,9 @@ class LLMGateway(Protocol):
     async def evaluate(self, request: EvaluationRequest) -> Evaluation:
         """Raises `LLMTransientError`, `LLMPermanentError` or `LLMInvalidOutput`."""
         ...
+
+    async def aclose(self) -> None:
+        """Release whatever the adapter holds open. On the port because the container
+        only ever sees this protocol, and a vendor client nobody closes is a noisy
+        shutdown. A gateway that holds nothing implements it as a no-op."""
+        ...

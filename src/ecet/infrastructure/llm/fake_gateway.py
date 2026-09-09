@@ -41,6 +41,10 @@ DEFAULT = (
 class FakeLlmGateway:
     MODEL = "fake-deterministic"
 
+    async def aclose(self) -> None:
+        """Nothing to release; the port declares it so the container can close any
+        gateway without knowing which one it built."""
+
     async def evaluate(self, request: EvaluationRequest) -> Evaluation:
         text = request.redacted_text.lower()
         decision, confidence, rationale = DEFAULT

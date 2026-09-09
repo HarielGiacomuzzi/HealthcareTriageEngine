@@ -149,6 +149,26 @@ async def test_a_permanent_delivery_failure_sets_notify_failed_with_a_token() ->
     assert uow.claims.saved == [claim.id]
 
 
+async def test_a_tenant_deactivated_before_delivery_parks_the_claim() -> None:
+    # `NotifyClient` reads the tenant first, and the repository refuses an inactive one.
+    # With no catch here, that escapes UC-06, rolls the evaluation back and leaves the
+    # claim QUEUED with no failure_reason.
+    claim = build_claim(confidence=0.90)
+    uow = FakeUnitOfWork(tenants=[build_tenant().model_copy(update={"active": False})])
+    await uow.claims.add(claim)
+    route = RouteDecision(
+        uow=uow, webhook=FakeWebhookClient(), clock=FixedClock(NOW), threshold=THRESHOLD
+    )
+
+    await route.execute(claim)
+
+    assert claim.status is ClaimStatus.NOTIFY_FAILED
+    assert claim.failure_reason == "tenant_inactive"
+    assert claim.last_notify_error is not None
+    assert uow.review_tasks.tasks == {}
+    assert uow.claims.saved == [claim.id]
+
+
 async def test_a_transient_delivery_failure_sets_notify_failed_with_its_own_token() -> None:
     claim = build_claim(confidence=0.90)
     route, _ = await build_case(claim, FakeWebhookClient(error=WebhookTransientError("timeout")))

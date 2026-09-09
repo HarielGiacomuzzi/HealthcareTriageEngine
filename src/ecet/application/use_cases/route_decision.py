@@ -22,6 +22,7 @@ from ecet.application.ports.webhook_client import WebhookClient
 from ecet.application.use_cases.human_review import RequestHumanReview
 from ecet.application.use_cases.notify_client import NotifyClient
 from ecet.domain.claim import Claim, ClaimStatus
+from ecet.domain.errors import TenantNotFound
 from ecet.domain.evaluation import ReviewReason, Route, Verdict, triage
 
 log = structlog.get_logger(__name__)
@@ -30,6 +31,7 @@ log = structlog.get_logger(__name__)
 #: lives on `Claim.last_notify_error`, not here.
 REJECTED = "webhook_rejected"
 UNREACHABLE = "webhook_unreachable"
+TENANT_INACTIVE = "tenant_inactive"
 
 
 class RouteDecision:
@@ -73,6 +75,13 @@ class RouteDecision:
                     confidence=evaluation.confidence,
                     decided_by="auto",
                 )
+            except TenantNotFound as error:
+                # `NotifyClient` reads the tenant before it can attempt a delivery, and
+                # the repository refuses one deactivated between enqueue and evaluate.
+                # Parking the claim keeps the evaluation; letting it escape would roll
+                # the whole unit of work back and leave the claim QUEUED, reasonless.
+                claim.last_notify_error = f"{type(error).__name__}: {error}"
+                self._fail(claim, TENANT_INACTIVE)
             except WebhookError as error:
                 reason = REJECTED if isinstance(error, WebhookPermanentError) else UNREACHABLE
                 self._fail(claim, reason)

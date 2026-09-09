@@ -326,6 +326,9 @@ class FakeLLMGateway:
             raise self.error
         return self.evaluation
 
+    async def aclose(self) -> None:
+        """No-op: the port declares it, so the fake has to satisfy it."""
+
 
 def build_evaluation_request(
     *,

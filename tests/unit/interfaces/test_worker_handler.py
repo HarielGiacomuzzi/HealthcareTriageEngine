@@ -6,7 +6,6 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError, OperationalError
-from tests.fakes import FakeLLMGateway
 from tests.pii import assert_no_pii
 
 from ecet.application.errors import (
@@ -109,8 +108,3 @@ async def test_the_handler_re_raises_so_the_consumer_can_classify() -> None:
         await WorkerMessageHandler(evaluate).handle(message)
 
     assert_no_pii(message.model_dump_json())
-
-
-def test_the_fake_gateway_import_stays_available_to_the_worker_tests() -> None:
-    # Guards against the fakes module drifting out from under the worker suite.
-    assert FakeLLMGateway() is not None

@@ -71,7 +71,10 @@ async def build_container(settings: Settings) -> WorkerContainer:
             try:
                 await webhook.aclose()
             finally:
-                await engine.dispose()
+                try:
+                    await llm.aclose()
+                finally:
+                    await engine.dispose()
 
     log.info(
         "worker.container_built",

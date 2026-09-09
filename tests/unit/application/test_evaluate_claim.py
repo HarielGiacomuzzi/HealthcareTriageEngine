@@ -14,7 +14,12 @@ from tests.fakes import (
 )
 from tests.pii import assert_no_pii
 
-from ecet.application.errors import LLMInvalidOutput, LLMPermanentError, LLMTransientError
+from ecet.application.errors import (
+    LLMInvalidOutput,
+    LLMPermanentError,
+    LLMTransientError,
+    WebhookPermanentError,
+)
 from ecet.application.messages import EvaluationMessage, PolicySnapshot
 from ecet.application.use_cases.evaluate_claim import EvaluateClaim
 from ecet.domain.claim import Claim, ClaimStatus, RedactedText, SourceObject
@@ -126,7 +131,9 @@ async def test_a_confident_evaluation_reaches_approved_auto() -> None:
     assert stored.evaluation.confidence == 0.91
     assert len(llm.requests) == 1
     assert len(webhook.deliveries) == 1
-    assert uow.commits >= 1
+    # Deviation 1: UC-06 owns the unit of work and commits *once*, so the evaluation,
+    # the routing and the EVALUATED transition land in one transaction.
+    assert uow.commits == 1
     assert_no_pii(stored.model_dump_json())
 
 
@@ -203,6 +210,21 @@ async def test_a_permanent_llm_failure_fails_the_claim_and_opens_a_review(
     assert len(tasks) == 1
     assert tasks[0].reason is ReviewReason.EVALUATION_FAILED
     assert webhook.deliveries == []
+    assert uow.commits == 1
+
+
+async def test_a_delivery_failure_still_commits_the_evaluation_once() -> None:
+    webhook = FakeWebhookClient(error=WebhookPermanentError("400"))
+    case, uow, claim, _, _ = await build_world(webhook=webhook)
+
+    await case.execute(build_message(claim))
+
+    stored = uow.claims.claims[claim.id]
+    assert stored.status is ClaimStatus.NOTIFY_FAILED
+    assert stored.failure_reason == "webhook_rejected"
+    assert stored.evaluation is not None  # the evaluation survives the failed delivery
+    assert uow.commits == 1
+    assert_no_pii(stored.model_dump_json())
 
 
 async def test_a_redelivered_message_for_an_evaluated_claim_calls_no_gateway() -> None:
