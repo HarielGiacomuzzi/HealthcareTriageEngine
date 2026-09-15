@@ -22,8 +22,10 @@ from ecet.application.redaction_policy import (
     SCORE_THRESHOLD,
 )
 from ecet.application.use_cases.enqueue_evaluation import EnqueueEvaluation
+from ecet.application.use_cases.human_review import ListOpenReviews, ResolveReview
 from ecet.application.use_cases.ingest_claim_document import IngestClaimDocument
 from ecet.application.use_cases.redact_pii import RedactPii
+from ecet.application.use_cases.retry_notify import RetryNotify
 from ecet.application.use_cases.run_deterministic_checks import RunDeterministicChecks
 from ecet.config import Settings
 from ecet.infrastructure.clock import SystemClock
@@ -35,6 +37,7 @@ from ecet.infrastructure.postgres.session import create_engine, create_session_f
 from ecet.infrastructure.postgres.unit_of_work import SqlAlchemyUnitOfWork
 from ecet.infrastructure.queue.rabbitmq import RabbitMqEvaluationQueue
 from ecet.infrastructure.storage.s3 import S3ObjectStorage
+from ecet.infrastructure.webhook.httpx_client import HttpxWebhookClient
 
 log = structlog.get_logger(__name__)
 
@@ -47,6 +50,9 @@ class ApiContainer:
     uow_factory: Callable[[], UnitOfWork]
     storage: ObjectStorage
     ingest: IngestClaimDocument
+    list_reviews: ListOpenReviews
+    resolve_review: ResolveReview
+    retry_notify: RetryNotify
     #: `/readyz` checks. Mutable so a test can swap one out.
     probes: MutableMapping[str, Probe] = field(default_factory=dict)
     aclose: Callable[[], Awaitable[None]] = field(default_factory=lambda: _noop)
@@ -87,6 +93,11 @@ async def build_container(settings: Settings) -> ApiContainer:
     )
     clock = SystemClock()
 
+    # UC-09c and the operator retry deliver from the api process, not the worker.
+    webhook = HttpxWebhookClient(
+        timeout_s=settings.webhook_timeout_s, max_attempts=settings.webhook_max_attempts
+    )
+
     def uow_factory() -> UnitOfWork:
         return SqlAlchemyUnitOfWork(session_factory)
 
@@ -116,13 +127,19 @@ async def build_container(settings: Settings) -> ApiContainer:
         try:
             await queue.stop()
         finally:
-            await engine.dispose()
+            try:
+                await webhook.aclose()
+            finally:
+                await engine.dispose()
 
     return ApiContainer(
         settings=settings,
         uow_factory=uow_factory,
         storage=storage,
         ingest=ingest,
+        list_reviews=ListOpenReviews(uow_factory=uow_factory),
+        resolve_review=ResolveReview(uow_factory=uow_factory, webhook=webhook, clock=clock),
+        retry_notify=RetryNotify(uow_factory=uow_factory, webhook=webhook, clock=clock),
         probes={
             "database": database_ready,
             "queue": queue_ready,

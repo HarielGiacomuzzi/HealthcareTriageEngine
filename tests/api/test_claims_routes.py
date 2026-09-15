@@ -1,9 +1,12 @@
 from uuid import uuid4
 
-from tests.api.conftest import API_KEY, BUCKET, KEY, ApiHarness
+from tests.api.conftest import API_KEY, BUCKET, KEY, NOW, ApiHarness
 from tests.pii import assert_no_pii
 
-from ecet.domain.claim import ClaimStatus
+from ecet.application.errors import WebhookTransientError
+from ecet.domain.claim import Claim, ClaimStatus, SourceObject
+from ecet.domain.evaluation import Decision, Evaluation
+from ecet.domain.ids import ClaimId
 
 
 async def test_manual_ingest_fills_the_etag_and_size_from_head(
@@ -140,3 +143,96 @@ async def test_manual_ingest_refuses_a_bucket_the_deployment_does_not_own(
     assert response.json()["detail"] == "No object at that bucket and key."
     assert harness.storage.reads == []
     assert_no_pii(response.text)
+
+
+async def seed_notify_failed(harness: ApiHarness) -> ClaimId:
+    claim = Claim(
+        id=ClaimId(uuid4()),
+        tenant_id="tenant-a",
+        source=SourceObject(
+            bucket=BUCKET, key="tenants/tenant-a/claims/stuck.pdf", etag="etag-stuck", size=2048
+        ),
+        status=ClaimStatus.NOTIFY_FAILED,
+        evaluation=Evaluation(
+            decision=Decision.MEETS_NECESSITY,
+            confidence=0.91,
+            model="fake-deterministic",
+            prompt_version="v1",
+        ),
+        failure_reason="webhook_unreachable",
+        notification_attempts=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    await harness.uow.claims.add(claim)
+    return claim.id
+
+
+async def test_retry_notify_delivers_and_approves(harness: ApiHarness) -> None:
+    claim_id = await seed_notify_failed(harness)
+
+    async with harness.client() as client:
+        response = await client.post(
+            f"/v1/claims/{claim_id}/retry-notify", headers={"X-API-Key": API_KEY}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "APPROVED_AUTO"
+    assert body["failure_reason"] is None
+    ((_, payload),) = harness.webhook.deliveries
+    assert payload.decided_by == "auto"
+    assert_no_pii(payload.model_dump_json())
+
+
+async def test_a_retry_that_fails_again_answers_502_with_the_claim(harness: ApiHarness) -> None:
+    claim_id = await seed_notify_failed(harness)
+    harness.webhook.error = WebhookTransientError("3 attempts failed")
+
+    async with harness.client() as client:
+        response = await client.post(
+            f"/v1/claims/{claim_id}/retry-notify", headers={"X-API-Key": API_KEY}
+        )
+
+    # 502 so a `curl -f` in a script notices; the body is still the claim.
+    assert response.status_code == 502
+    body = response.json()
+    assert body["status"] == "NOTIFY_FAILED"
+    assert body["failure_reason"] == "webhook_unreachable"
+    assert harness.uow.claims.claims[claim_id].notification_attempts == 2
+    assert_no_pii(response.text)
+
+
+async def test_retry_notify_on_a_claim_that_did_not_fail_is_409(
+    harness: ApiHarness, api_headers: dict[str, str]
+) -> None:
+    async with harness.client() as client:
+        created = await client.post(
+            "/v1/claims/ingest", json={"bucket": BUCKET, "key": KEY}, headers=api_headers
+        )
+        response = await client.post(
+            f"/v1/claims/{created.json()['claim_id']}/retry-notify",
+            headers={"X-API-Key": API_KEY},
+        )
+
+    assert response.status_code == 409
+    assert harness.webhook.deliveries == []
+
+
+async def test_retry_notify_on_an_unknown_claim_is_404(harness: ApiHarness) -> None:
+    async with harness.client() as client:
+        response = await client.post(
+            f"/v1/claims/{uuid4()}/retry-notify", headers={"X-API-Key": API_KEY}
+        )
+
+    assert response.status_code == 404
+
+
+async def test_retry_notify_needs_the_api_key(harness: ApiHarness) -> None:
+    claim_id = await seed_notify_failed(harness)
+
+    async with harness.client() as client:
+        response = await client.post(f"/v1/claims/{claim_id}/retry-notify")
+
+    assert response.status_code == 401
+    assert harness.webhook.deliveries == []

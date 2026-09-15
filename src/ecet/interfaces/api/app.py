@@ -7,7 +7,7 @@ from ecet import __version__
 from ecet.config import Settings
 from ecet.interfaces.api.container import ApiContainer, build_container
 from ecet.interfaces.api.errors import register_error_handlers
-from ecet.interfaces.api.routes import claims, events, health
+from ecet.interfaces.api.routes import claims, events, health, reviews
 
 
 def create_app(settings: Settings, container: ApiContainer | None = None) -> FastAPI:
@@ -36,4 +36,5 @@ def create_app(settings: Settings, container: ApiContainer | None = None) -> Fas
     app.include_router(health.router)
     app.include_router(events.router)
     app.include_router(claims.router)
+    app.include_router(reviews.router)
     return app
