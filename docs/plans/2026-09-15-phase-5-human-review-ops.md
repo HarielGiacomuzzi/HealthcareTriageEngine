@@ -24,7 +24,7 @@
 - **`PostgresClaimRepository.save` refuses a claim it never read.** Every new use case `get()`s (or `find_by_source()`s) the claim in the same unit of work before saving it.
 - **`failure_reason` is a short token, never an exception message.** This phase adds no token. A failed resolve or retry reuses `webhook_rejected`, `webhook_unreachable` and `tenant_inactive`, which now live in `application/use_cases/notify_client.py`. Exception detail goes on `Claim.last_notify_error`.
 - **Tenant isolation is the use case's job, and a miss is a 404, never a 403.** `ReviewTaskRepository.get(task_id)` has no tenant parameter, so `ResolveReview` compares `task.tenant_id` against the caller's tenant before it touches anything. A task belonging to another tenant raises `ReviewTaskNotFound`, exactly like one that does not exist.
-- **Nothing in CI, compose or pytest calls a real LLM vendor.** `ECET_LLM_PROVIDER=fake` stays the default in `.env.example`, and `docker-compose.yml` never overrides it. The only code that talks to a live endpoint is `scripts/record_vendor_fixture.py`, run by a person through `make record-vendor`, and it refuses to start unless `ECET_LLM_PROVIDER=openai`.
+- **Nothing in CI, compose or pytest calls a real LLM vendor — nor does anything else, ever.** `ECET_LLM_PROVIDER=fake` stays the default in `.env.example`, and `docker-compose.yml` never overrides it. Task 8 (a script that would have called a live endpoint once, by hand) was cancelled at the user's direction; the OpenAI-compatible adapter is verified against `httpx.MockTransport` only.
 - Adapter tests that need a container live in `tests/adapters/`, where that directory's `conftest.py` auto-marks them `slow`. Run them with `-m slow`, which overrides the default `addopts` marker filter.
 - TDD: every step pair is "write the failing test" → "watch it fail" → "minimal implementation" → "watch it pass". Commit after every task with a conventional prefix. **No Claude attribution in commit messages.**
 - Git in this environment needs `export DEVELOPER_DIR=/Library/Developer/CommandLineTools` before any `git` command (Xcode license error otherwise).
@@ -2230,6 +2230,14 @@ git commit -m "feat(queue): ecet dlq-replay moves dead letters back onto claims.
 
 ### Task 8: The real vendor run and the recorded fixture
 
+> **Cancelled.** The user decided not to call a real vendor at all ("use mocks for
+> testing it, we won't use a real API"). `scripts/record_vendor_fixture.py`, the
+> `make record-vendor` target and the recorded-fixture replay test were removed from
+> the tree; there is no `tests/fixtures/llm/openai_meets.json` and there never will be.
+> Only the compose/CI no-vendor guard (`test_the_default_stack_never_calls_a_real_vendor`
+> in `tests/unit/test_compose.py`) was kept. The OpenAI-compatible adapter stays
+> verified against `httpx.MockTransport` only, as it was after Phase 4.
+
 **Files:**
 - Create: `scripts/record_vendor_fixture.py`
 - Create: `tests/fixtures/llm/openai_meets.json` (**recorded by the script against a live endpoint, never written by hand**)
@@ -2247,7 +2255,7 @@ The "env flag" is the setting that already exists: `ECET_LLM_PROVIDER=openai`. P
 
 > **This task needs a real API key, which an implementer subagent does not have.** Do Steps 1–5 and 7, then stop at Step 6 and ask the human partner to run the recording. Do not fabricate the fixture, and do not commit without it.
 
-- [x] **Step 1: Write the failing replay test**
+- [ ] **Step 1: Write the failing replay test**
 
 In `tests/unit/infrastructure/test_openai_gateway.py`, add `from pathlib import Path`, `from uuid import UUID` and `from ecet.domain.ids import PolicyId` to the imports, then append:
 
@@ -2272,7 +2280,7 @@ async def test_a_recorded_live_response_still_parses_to_the_evaluation_it_produc
     assert_no_pii(json.dumps(recorded))
 ```
 
-- [x] **Step 2: Write the failing no-vendor guard**
+- [ ] **Step 2: Write the failing no-vendor guard**
 
 Append to `tests/unit/test_compose.py`:
 
@@ -2287,12 +2295,12 @@ def test_the_default_stack_never_calls_a_real_vendor(compose: dict[str, Any]) ->
         assert "ECET_LLM_PROVIDER" not in compose["services"][service].get("environment", {})
 ```
 
-- [x] **Step 3: Run them**
+- [ ] **Step 3: Run them**
 
 Run: `uv run pytest tests/unit/infrastructure/test_openai_gateway.py tests/unit/test_compose.py -v`
 Expected: the replay test FAILS with `FileNotFoundError: ... tests/fixtures/llm/openai_meets.json`. The compose guard PASSES straight away: it pins a property that already holds, so a later edit cannot quietly break it.
 
-- [x] **Step 4: Write the recording script**
+- [ ] **Step 4: Write the recording script**
 
 Create `scripts/record_vendor_fixture.py`:
 
@@ -2396,7 +2404,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [x] **Step 5: Add the Makefile target and check the refusal path**
+- [ ] **Step 5: Add the Makefile target and check the refusal path**
 
 In the `Makefile`, add `record-vendor` to the `.PHONY` line and append:
 
@@ -2581,7 +2589,7 @@ make dlq-replay LIMIT=10
 ```
 Expected: `replayed 0 message(s) from claims.evaluate.dlq`. The fake provider dead-letters nothing, so this proves the command reaches the broker from the worker container. The replay itself is proven by the adapter test in Task 7.
 
-- [x] **Step 10 (optional, needs a key): the real vendor through the whole stack**
+- [ ] **Step 10 (optional, needs a key): the real vendor through the whole stack** — not run. Task 8 was cancelled at the user's direction and no real vendor is ever called (see Task 8's cancellation note); this optional step is moot.
 
 Set `ECET_LLM_PROVIDER=openai` and `ECET_LLM_API_KEY=<key>` in your local `.env` (never in `.env.example`), then run `make clean && make demo`. The worker log shows `llm.evaluated provider=openai` with real token counts. A 429 dead-letters the claim within a second (deviation 11); `make dlq-replay` puts it back once the rate limit clears. Set `.env` back to `fake` afterwards.
 
@@ -2678,7 +2686,7 @@ Everything below must be true before the phase is called done:
 5. Resolving the same task a second time answers 409. Resolving it under `X-Tenant-Id: tenant-b` answers 404 and sends no webhook.
 6. The Task 9 Step 8 sequence turns a `NOTIFY_FAILED` claim into `APPROVED_AUTO` through `POST /v1/claims/{id}/retry-notify`: 502 while the receiver is down, 200 once it is back.
 7. `make dlq-replay` runs in the stack. `tests/adapters/test_rabbitmq_consumer.py::test_dlq_replay_moves_dead_letters_back_within_the_limit` is green.
-8. `tests/fixtures/llm/openai_meets.json` exists, was produced by `make record-vendor` against a live endpoint, and is replayed green by `test_a_recorded_live_response_still_parses_to_the_evaluation_it_produced`. `docker-compose.yml`, `.github/` and `.env.example` contain no `ECET_LLM_PROVIDER=openai`.
+8. Cancelled at the user's direction: no real vendor is ever called, so there is no `tests/fixtures/llm/openai_meets.json` and no `make record-vendor` target. The OpenAI-compatible adapter stays verified against `httpx.MockTransport` only. `docker-compose.yml`, `.github/` and `.env.example` contain no `ECET_LLM_PROVIDER=openai`.
 9. A publish failure followed by the same object arriving again leaves the claim `QUEUED` with one message on the queue (the Task 5 unit test).
 10. No API response other than `GET /v1/reviews` contains claim text, no webhook payload or log line contains a reviewer's `notes`, and nothing contains a string from `tests/pii.py::PII_STRINGS` (asserted in the unit and API tests, and eyeballed once in `docker compose logs api worker`).
 
@@ -2695,7 +2703,7 @@ Fill this in during execution. The list below is what the plan *expects* to devi
 7. **`retry-notify` is not tenant-scoped.** The api spec gives it the api key only (unlike `GET /v1/claims/{id}` and the review routes), and v1's single global key already reaches every tenant. The route is an operator action that re-sends an existing decision.
 8. **The delivery-failure → token mapping moved from `RouteDecision` into `NotifyClient.attempt`**, and the tokens `webhook_rejected`, `webhook_unreachable` and `tenant_inactive` moved with it. UC-07, UC-09c and the retry park a failed delivery identically, and three copies of the same `except` ladder would drift.
 9. **`ecet dlq-replay` re-publishes each body verbatim and strips the broker's headers**, keeping only `x-tenant-id` and `x-schema-version`, so a replayed message starts a fresh delivery budget. It acks off the DLQ only after the publish is confirmed (at-least-once) and does not re-validate: an undecodable body dead-letters again.
-10. **The real-vendor run is a script run by a person (`make record-vendor`), not a pytest test.** The autouse `_no_ambient_ecet_env` fixture strips every `ECET_*` variable from tests, and a test that calls a vendor when a key happens to be present is exactly what must never run in CI. The script redacts the note with `FakePiiRedactor` (behind an `assert_no_pii` gate) rather than presidio, so it needs no spaCy model. The fixture note's PII is synthetic and fully covered by the fake's patterns.
+10. **The roadmap's "real vendor run behind env flag; record one real evaluation output as fixture" line for Phase 5 was dropped, at the user's direction: no real vendor is ever called.** Task 8 (`scripts/record_vendor_fixture.py`, `make record-vendor`, `tests/fixtures/llm/openai_meets.json`, and the recorded-fixture replay test) was cancelled and removed from the tree. Only the compose/CI no-vendor guard test survives (`test_the_default_stack_never_calls_a_real_vendor` in `tests/unit/test_compose.py`). The OpenAI-compatible adapter stays verified against `httpx.MockTransport` only, exactly as it was after Phase 4.
 11. **Requeue still has no delay.** The roadmap names `ecet dlq-replay` as this phase's recovery for the 429 case (Phase 4 carry-over #10), and that is what ships. A delayed-retry queue, or per-message backoff before `nack(requeue=True)`, is a topology change and a different retry policy, so it is recorded as accepted for v1 rather than half-built.
 12. **The api now depends on `mock-client` in compose.** It delivers webhooks for UC-09c and the retry. The [docker-compose spec](../../specs/05-platform/docker-compose.md#docker-composeyml-services) lists only postgres and rabbitmq for it.
 13. **The webhook POST behind resolve and retry runs inside the HTTP request and the open unit of work.** This is the api-side twin of Phase 4 deviation 17, and is recorded, not restructured, for the same reason. Closed by Phase 6.
