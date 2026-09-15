@@ -60,7 +60,7 @@
 
 Both are prerequisites for later tasks. UC-09c (Task 2) resolves claims that UC-06 parked in `EVALUATION_FAILED`, and that resolution's webhook can fail like any other, but the state machine has no edge for it today. `RetryNotify` (Task 4) needs to find a *resolved* task, and `find_open_by_claim` deliberately cannot.
 
-- [ ] **Step 1: Write the failing domain test**
+- [x] **Step 1: Write the failing domain test**
 
 Append to `tests/unit/domain/test_claim.py`:
 
@@ -76,7 +76,7 @@ def test_a_resolved_evaluation_failure_can_still_fail_delivery() -> None:
     assert claim.failure_reason == "webhook_unreachable"
 ```
 
-- [ ] **Step 2: Write the failing fake-repository test**
+- [x] **Step 2: Write the failing fake-repository test**
 
 Append to `tests/unit/domain/test_ports.py`:
 
@@ -101,12 +101,12 @@ async def test_review_task_repository_finds_a_claims_task_in_any_status() -> Non
     assert await repo.find_by_claim(ClaimId(uuid4())) is None
 ```
 
-- [ ] **Step 3: Run both and watch them fail**
+- [x] **Step 3: Run both and watch them fail**
 
 Run: `uv run pytest tests/unit/domain/test_claim.py tests/unit/domain/test_ports.py -v`
 Expected: FAIL. `test_a_resolved_evaluation_failure_can_still_fail_delivery` fails with `InvalidTransition: EVALUATION_FAILED -> NOTIFY_FAILED is not an allowed transition`, and the port test fails with `AttributeError: 'FakeReviewTaskRepository' object has no attribute 'find_by_claim'`.
 
-- [ ] **Step 4: Add the edge**
+- [x] **Step 4: Add the edge**
 
 In `src/ecet/domain/claim.py`, replace the `EVALUATION_FAILED` entry of `_ALLOWED`:
 
@@ -120,7 +120,7 @@ In `src/ecet/domain/claim.py`, replace the `EVALUATION_FAILED` entry of `_ALLOWE
 
 `test_every_allowed_edge_survives_a_real_transition` already walks `_ALLOWED`, so it covers the new edge without change.
 
-- [ ] **Step 5: Add the port method**
+- [x] **Step 5: Add the port method**
 
 In `src/ecet/domain/ports/review_task_repository.py`, add below `find_open_by_claim`:
 
@@ -132,7 +132,7 @@ In `src/ecet/domain/ports/review_task_repository.py`, add below `find_open_by_cl
         ...
 ```
 
-- [ ] **Step 6: Implement it in the fake**
+- [x] **Step 6: Implement it in the fake**
 
 In `tests/fakes.py`, add to `FakeReviewTaskRepository` below `find_open_by_claim`:
 
@@ -141,12 +141,12 @@ In `tests/fakes.py`, add to `FakeReviewTaskRepository` below `find_open_by_claim
         return next((task for task in self.tasks.values() if task.claim_id == claim_id), None)
 ```
 
-- [ ] **Step 7: Run the unit tests and watch them pass**
+- [x] **Step 7: Run the unit tests and watch them pass**
 
 Run: `uv run pytest tests/unit/domain -v`
 Expected: PASS, including both new tests and `test_fakes_satisfy_their_ports`.
 
-- [ ] **Step 8: Write the failing adapter test**
+- [x] **Step 8: Write the failing adapter test**
 
 Append to `tests/adapters/test_review_task_repository.py`:
 
@@ -172,12 +172,12 @@ async def test_find_by_claim_returns_a_resolved_task_too(
     assert found.resolution is Decision.DOES_NOT_MEET
 ```
 
-- [ ] **Step 9: Run it and watch it fail**
+- [x] **Step 9: Run it and watch it fail**
 
 Run: `uv run pytest tests/adapters/test_review_task_repository.py -m slow -v`
 Expected: FAIL with `AttributeError: 'PostgresReviewTaskRepository' object has no attribute 'find_by_claim'`.
 
-- [ ] **Step 10: Implement it in the Postgres repository**
+- [x] **Step 10: Implement it in the Postgres repository**
 
 In `src/ecet/infrastructure/postgres/repositories.py`, add to `PostgresReviewTaskRepository` below `find_open_by_claim`:
 
@@ -193,12 +193,12 @@ In `src/ecet/infrastructure/postgres/repositories.py`, add to `PostgresReviewTas
         return None if row is None else review_task_from_row(row)
 ```
 
-- [ ] **Step 11: Run the adapter test and watch it pass**
+- [x] **Step 11: Run the adapter test and watch it pass**
 
 Run: `uv run pytest tests/adapters/test_review_task_repository.py -m slow -v`
 Expected: PASS (every test in the file).
 
-- [ ] **Step 12: Check the layers, the types and the default suite**
+- [x] **Step 12: Check the layers, the types and the default suite**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -209,7 +209,7 @@ uv run pytest
 ```
 Expected: all green.
 
-- [ ] **Step 13: Commit**
+- [x] **Step 13: Commit**
 
 ```bash
 git add src/ecet/domain/claim.py src/ecet/domain/ports/review_task_repository.py \
@@ -240,7 +240,7 @@ git commit -m "feat(review): EVALUATION_FAILED -> NOTIFY_FAILED edge and ReviewT
 
 `RouteDecision` today maps a delivery failure to a token inline: `TenantNotFound` becomes `tenant_inactive`, `WebhookPermanentError` becomes `webhook_rejected`, and any other `WebhookError` becomes `webhook_unreachable`. UC-09c and the retry in Task 4 need the same mapping, so this task moves it into `NotifyClient.attempt` once and points `RouteDecision` at it. The existing `test_route_decision.py` is the regression guard for that move.
 
-- [ ] **Step 1: Write the failing `attempt` tests**
+- [x] **Step 1: Write the failing `attempt` tests**
 
 Append to `tests/unit/application/test_notify_client.py`:
 
@@ -290,12 +290,12 @@ async def test_attempt_returns_none_when_the_webhook_is_delivered() -> None:
     assert len(webhook.deliveries) == 1
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `uv run pytest tests/unit/application/test_notify_client.py -v`
 Expected: FAIL with `AttributeError: 'NotifyClient' object has no attribute 'attempt'`.
 
-- [ ] **Step 3: Add `attempt` and the tokens to `NotifyClient`**
+- [x] **Step 3: Add `attempt` and the tokens to `NotifyClient`**
 
 In `src/ecet/application/use_cases/notify_client.py`, change the imports to:
 
@@ -355,7 +355,7 @@ and add this method to `NotifyClient`, below `execute`:
 
 In the module docstring, change "the caller (UC-07, and UC-09c in Phase 5) owns the unit of work" to "the caller (UC-07, UC-09c, or the operator retry) owns the unit of work".
 
-- [ ] **Step 4: Point `RouteDecision` at it**
+- [x] **Step 4: Point `RouteDecision` at it**
 
 In `src/ecet/application/use_cases/route_decision.py`, delete the three token constants and their comment. Also delete the imports `from ecet.application.errors import WebhookError, WebhookPermanentError` and `from ecet.domain.errors import TenantNotFound`. Then replace the whole `else:` branch of `execute` with:
 
@@ -373,12 +373,12 @@ In `src/ecet/application/use_cases/route_decision.py`, delete the three token co
                 self._fail(claim, reason)
 ```
 
-- [ ] **Step 5: Run the notify and routing tests and watch them pass**
+- [x] **Step 5: Run the notify and routing tests and watch them pass**
 
 Run: `uv run pytest tests/unit/application/test_notify_client.py tests/unit/application/test_route_decision.py tests/unit/application/test_evaluate_claim.py -v`
 Expected: PASS. The three new `attempt` tests pass, and every existing UC-07 and UC-06 test is unchanged, including `test_a_tenant_deactivated_before_delivery_parks_the_claim` and both token tests.
 
-- [ ] **Step 6: Write the failing UC-09c test**
+- [x] **Step 6: Write the failing UC-09c test**
 
 Create `tests/unit/application/test_resolve_review.py`:
 
@@ -606,12 +606,12 @@ async def test_a_claim_not_awaiting_review_is_refused_before_any_delivery() -> N
     assert case.uow.commits == 0
 ```
 
-- [ ] **Step 7: Run it and watch it fail**
+- [x] **Step 7: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/application/test_resolve_review.py -v`
 Expected: FAIL with `ImportError: cannot import name 'ResolveReview' from 'ecet.application.use_cases.human_review'`.
 
-- [ ] **Step 8: Write UC-09c**
+- [x] **Step 8: Write UC-09c**
 
 Replace the module docstring and imports of `src/ecet/application/use_cases/human_review.py` with:
 
@@ -732,12 +732,12 @@ class ResolveReview:
 
 Every import above is used after this step, either by `RequestHumanReview` (`Claim`, `ReviewReason`, `ReviewTask`, `ReviewTaskRepository`, `uuid4`) or by the new code. If `ruff check` reports an unused import, you have dropped a line of `RequestHumanReview`.
 
-- [ ] **Step 9: Run UC-09c and watch it pass**
+- [x] **Step 9: Run UC-09c and watch it pass**
 
 Run: `uv run pytest tests/unit/application/test_resolve_review.py tests/unit/application/test_request_human_review.py -v`
 Expected: PASS (9 new tests, plus the two existing UC-09a tests).
 
-- [ ] **Step 10: Check types and layers**
+- [x] **Step 10: Check types and layers**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -747,7 +747,7 @@ uv run pytest
 ```
 Expected: all green. `mypy --strict` is the real check that `command.resolution` (a `Literal` of two `Decision` members) is accepted where `NotifyClient` wants a `Decision`.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add src/ecet/application/use_cases/notify_client.py \
@@ -773,7 +773,7 @@ git commit -m "feat(review): UC-09c ResolveReview and NotifyClient.attempt"
 
 This closes Phase 3 carry-over #2 ("`ClaimView` omits the redacted text that UC-09b needs"). The review view carries the text, and `ClaimView` does not grow it (deviation 3).
 
-- [ ] **Step 1: Write the failing UC-09b test**
+- [x] **Step 1: Write the failing UC-09b test**
 
 Create `tests/unit/application/test_list_open_reviews.py`:
 
@@ -909,12 +909,12 @@ async def test_the_limit_is_honoured() -> None:
     assert len(views) == 2
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/application/test_list_open_reviews.py -v`
 Expected: FAIL with `ImportError: cannot import name 'ListOpenReviews'`.
 
-- [ ] **Step 3: Write UC-09b**
+- [x] **Step 3: Write UC-09b**
 
 In `src/ecet/application/use_cases/human_review.py`, extend the imports:
 
@@ -982,12 +982,12 @@ class ListOpenReviews:
 
 Update the module docstring's first paragraph to mention UC-09b: "UC-09b lists a tenant's open tasks with the redacted note, the deterministic checks and the LLM evaluation beside each."
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `uv run pytest tests/unit/application/test_list_open_reviews.py -v`
 Expected: PASS (5 tests).
 
-- [ ] **Step 5: Check types and layers**
+- [x] **Step 5: Check types and layers**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -997,7 +997,7 @@ uv run pytest
 ```
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ecet/application/use_cases/human_review.py \
@@ -1017,7 +1017,7 @@ git commit -m "feat(review): UC-09b ListOpenReviews with the redacted note besid
 - Consumes: `NotifyClient.attempt` (Task 2); `ReviewTaskRepository.find_by_claim` (Task 1); `NOTIFY_FAILED → APPROVED_AUTO | REVIEW_RESOLVED` (Phase 1 state machine).
 - Produces: `ecet.application.use_cases.retry_notify.RetryNotify`, with `__init__(*, uow_factory: Callable[[], UnitOfWork], webhook: WebhookClient, clock: Clock)` and `async execute(claim_id: ClaimId) -> Claim`. It raises `ClaimNotFound`, or `InvalidTransition` when the claim is not `NOTIFY_FAILED` or has no decision to deliver. A delivery that fails again is **not** raised; the claim comes back still `NOTIFY_FAILED`, with the attempt committed.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/unit/application/test_retry_notify.py`:
 
@@ -1182,12 +1182,12 @@ async def test_a_claim_with_no_decision_is_refused_rather_than_invented() -> Non
     assert webhook.deliveries == []
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/application/test_retry_notify.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'ecet.application.use_cases.retry_notify'`.
 
-- [ ] **Step 3: Write the use case**
+- [x] **Step 3: Write the use case**
 
 Create `src/ecet/application/use_cases/retry_notify.py`:
 
@@ -1286,12 +1286,12 @@ class RetryNotify:
         return claim
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `uv run pytest tests/unit/application/test_retry_notify.py -v`
 Expected: PASS (8 tests including the three parametrised statuses).
 
-- [ ] **Step 5: Check types and layers**
+- [x] **Step 5: Check types and layers**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -1301,7 +1301,7 @@ uv run pytest
 ```
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ecet/application/use_cases/retry_notify.py tests/unit/application/test_retry_notify.py
@@ -1322,7 +1322,7 @@ git commit -m "feat(notify): RetryNotify, the operator exit from NOTIFY_FAILED"
 
 This closes Phase 3 carry-over #1. UC-01 commits `POLICIES_ATTACHED` before publishing, so a failed publish leaves a durable claim, and the api answers 503. The compose MinIO webhook target has a persistent `queue_dir` (Phase 4), so MinIO spools that event and re-sends it. Today the re-sent event hits the duplicate check and returns the stuck claim untouched. After this task the same event is the retry, and so is an operator re-posting `POST /v1/claims/ingest` for the same object.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/unit/application/test_ingest_claim_document.py`:
 
@@ -1364,12 +1364,12 @@ async def test_a_re_publish_that_fails_again_leaves_the_claim_policies_attached(
 
 `test_a_duplicate_source_object_is_a_no_op` already covers a `QUEUED` duplicate, which must still publish exactly once.
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `uv run pytest tests/unit/application/test_ingest_claim_document.py -v`
 Expected: FAIL. The first test gets `status is POLICIES_ATTACHED` and an empty `published`. The second raises nothing on the second ingest (`DID NOT RAISE`).
 
-- [ ] **Step 3: Re-publish from the duplicate branch**
+- [x] **Step 3: Re-publish from the duplicate branch**
 
 In `src/ecet/application/use_cases/ingest_claim_document.py`, replace the duplicate branch in `execute` with:
 
@@ -1415,12 +1415,12 @@ operator re-posting `/v1/claims/ingest`: the duplicate check re-publishes a clai
 finds still `POLICIES_ATTACHED` instead of returning it untouched.
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `uv run pytest tests/unit/application/test_ingest_claim_document.py tests/api -v`
 Expected: PASS. Both new tests pass, and every existing UC-01 and API test still passes, including `test_the_happy_path_queues_the_claim`'s `commits == 3`.
 
-- [ ] **Step 5: Check types and layers**
+- [x] **Step 5: Check types and layers**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -1430,7 +1430,7 @@ uv run pytest
 ```
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ecet/application/use_cases/ingest_claim_document.py \
@@ -1459,7 +1459,7 @@ git commit -m "fix(ingest): re-publish a claim left POLICIES_ATTACHED when its o
   - `POST /v1/claims/{claim_id}/retry-notify` returns a `ClaimView` body: status 200 when the webhook was delivered, 502 when it failed again.
   - `tests.api.conftest.ApiHarness.webhook: FakeWebhookClient`.
 
-- [ ] **Step 1: Wire the harness to the new container fields**
+- [x] **Step 1: Wire the harness to the new container fields**
 
 In `tests/api/conftest.py`, add `FakeWebhookClient` to the `tests.fakes` import and add these imports:
 
@@ -1488,7 +1488,7 @@ In `ApiHarness.__init__`, add `self.webhook = FakeWebhookClient()` directly belo
         )
 ```
 
-- [ ] **Step 2: Write the failing reviews-route test**
+- [x] **Step 2: Write the failing reviews-route test**
 
 Create `tests/api/test_reviews_routes.py`:
 
@@ -1688,7 +1688,7 @@ async def test_a_failed_delivery_still_answers_200_with_the_parked_status(
     assert response.json()["claim_status"] == "NOTIFY_FAILED"
 ```
 
-- [ ] **Step 3: Write the failing retry-notify route tests**
+- [x] **Step 3: Write the failing retry-notify route tests**
 
 In `tests/api/test_claims_routes.py`, change the first two import lines to:
 
@@ -1798,12 +1798,12 @@ async def test_retry_notify_needs_the_api_key(harness: ApiHarness) -> None:
     assert harness.webhook.deliveries == []
 ```
 
-- [ ] **Step 4: Run the API suite and watch it fail**
+- [x] **Step 4: Run the API suite and watch it fail**
 
 Run: `uv run pytest tests/api -v`
 Expected: FAIL. At first every test errors with `TypeError: ApiContainer.__init__() got an unexpected keyword argument 'list_reviews'`. After the container change in Step 5 and before the routes exist, the new tests fail with 404 or 405.
 
-- [ ] **Step 5: Add the container fields and build them**
+- [x] **Step 5: Add the container fields and build them**
 
 In `src/ecet/interfaces/api/container.py`, add these imports:
 
@@ -1851,7 +1851,7 @@ and pass the new fields in the `ApiContainer(...)` return, after `ingest=ingest,
         retry_notify=RetryNotify(uow_factory=uow_factory, webhook=webhook, clock=clock),
 ```
 
-- [ ] **Step 6: Write the reviews router**
+- [x] **Step 6: Write the reviews router**
 
 Create `src/ecet/interfaces/api/routes/reviews.py`:
 
@@ -1922,7 +1922,7 @@ async def resolve_review(
     )
 ```
 
-- [ ] **Step 7: Add the retry-notify route**
+- [x] **Step 7: Add the retry-notify route**
 
 In `src/ecet/interfaces/api/routes/claims.py`, add `from fastapi.responses import JSONResponse` to the imports, and append:
 
@@ -1945,16 +1945,16 @@ it is an operator action, like manual ingest, and v1's single global key already
 reaches every tenant. It re-sends a decision that exists; it never decides anything.
 ```
 
-- [ ] **Step 8: Register the router**
+- [x] **Step 8: Register the router**
 
 In `src/ecet/interfaces/api/app.py`, change the routes import to `from ecet.interfaces.api.routes import claims, events, health, reviews` and add `app.include_router(reviews.router)` below `app.include_router(claims.router)`.
 
-- [ ] **Step 9: Run the API suite and watch it pass**
+- [x] **Step 9: Run the API suite and watch it pass**
 
 Run: `uv run pytest tests/api -v`
 Expected: PASS. The 10 new reviews-route tests and the 5 new retry-notify tests pass, and every existing API test is unchanged.
 
-- [ ] **Step 10: Check the whole default suite and the types**
+- [x] **Step 10: Check the whole default suite and the types**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -1965,7 +1965,7 @@ uv run pytest
 ```
 Expected: all green.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add src/ecet/interfaces/api/routes/reviews.py src/ecet/interfaces/api/routes/claims.py \
@@ -1994,7 +1994,7 @@ git commit -m "feat(api): /v1/reviews, resolve and retry-notify routes"
 
 This closes Phase 4 carry-over #10's recovery path. Requeue has no delay, so a provider 429 burns all five deliveries in milliseconds and dead-letters the claim. Nothing is saved on that path (UC-06 re-raises `LLMTransientError` before touching the claim), so the claim is still `QUEUED`, and putting its message back on `claims.evaluate` is a complete recovery.
 
-- [ ] **Step 1: Write the failing CLI tests**
+- [x] **Step 1: Write the failing CLI tests**
 
 Append to `tests/unit/test_cli.py`:
 
@@ -2033,12 +2033,12 @@ def test_dlq_replay_refuses_a_non_positive_limit(
     assert result.exit_code == 2
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `uv run pytest tests/unit/test_cli.py -v`
 Expected: FAIL. The first test gets exit code 2 with `No such command 'dlq-replay'`. The second passes for the wrong reason (a missing command also exits 2); it becomes meaningful once the command exists.
 
-- [ ] **Step 3: Write the failing adapter test**
+- [x] **Step 3: Write the failing adapter test**
 
 In `tests/adapters/test_rabbitmq_consumer.py`, extend the `ecet.infrastructure.queue.rabbitmq` import to:
 
@@ -2104,12 +2104,12 @@ async def test_dlq_replay_moves_dead_letters_back_within_the_limit(
         assert_no_pii(m.body.decode("utf-8"))
 ```
 
-- [ ] **Step 4: Run it and watch it fail**
+- [x] **Step 4: Run it and watch it fail**
 
 Run: `uv run pytest tests/adapters/test_rabbitmq_consumer.py -m slow -v`
 Expected: FAIL with `ImportError: cannot import name 'replay_dead_letters' from 'ecet.infrastructure.queue.rabbitmq'`.
 
-- [ ] **Step 5: Write the replay**
+- [x] **Step 5: Write the replay**
 
 In `src/ecet/infrastructure/queue/rabbitmq.py`, append below `declare_topology`:
 
@@ -2171,7 +2171,7 @@ async def replay_dead_letters(url: str, *, limit: int) -> int:
 
 Extend the module docstring's last paragraph: "`ecet dlq-replay` (`replay_dead_letters`) is the operator's way back out of the DLQ."
 
-- [ ] **Step 6: Add the CLI command**
+- [x] **Step 6: Add the CLI command**
 
 In `src/ecet/cli.py`, add `from typing import Annotated` to the imports, and append:
 
@@ -2189,7 +2189,7 @@ def dlq_replay(
     typer.echo(f"replayed {moved} message(s) from claims.evaluate.dlq")
 ```
 
-- [ ] **Step 7: Add the Makefile target**
+- [x] **Step 7: Add the Makefile target**
 
 In the `Makefile`, add `dlq-replay` to the `.PHONY` line and append:
 
@@ -2200,7 +2200,7 @@ dlq-replay: .env
 	docker compose exec worker ecet dlq-replay --limit $(or $(LIMIT),100)
 ```
 
-- [ ] **Step 8: Run the CLI and adapter tests and watch them pass**
+- [x] **Step 8: Run the CLI and adapter tests and watch them pass**
 
 ```bash
 uv run pytest tests/unit/test_cli.py -v
@@ -2208,7 +2208,7 @@ uv run pytest tests/adapters/test_rabbitmq_consumer.py -m slow -v
 ```
 Expected: PASS (7 CLI tests; 5 consumer adapter tests including the replay).
 
-- [ ] **Step 9: Check types and layers**
+- [x] **Step 9: Check types and layers**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -2218,7 +2218,7 @@ uv run pytest
 ```
 Expected: all green.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add src/ecet/infrastructure/queue/rabbitmq.py src/ecet/cli.py Makefile \
@@ -2247,7 +2247,7 @@ The "env flag" is the setting that already exists: `ECET_LLM_PROVIDER=openai`. P
 
 > **This task needs a real API key, which an implementer subagent does not have.** Do Steps 1–5 and 7, then stop at Step 6 and ask the human partner to run the recording. Do not fabricate the fixture, and do not commit without it.
 
-- [ ] **Step 1: Write the failing replay test**
+- [x] **Step 1: Write the failing replay test**
 
 In `tests/unit/infrastructure/test_openai_gateway.py`, add `from pathlib import Path`, `from uuid import UUID` and `from ecet.domain.ids import PolicyId` to the imports, then append:
 
@@ -2272,7 +2272,7 @@ async def test_a_recorded_live_response_still_parses_to_the_evaluation_it_produc
     assert_no_pii(json.dumps(recorded))
 ```
 
-- [ ] **Step 2: Write the failing no-vendor guard**
+- [x] **Step 2: Write the failing no-vendor guard**
 
 Append to `tests/unit/test_compose.py`:
 
@@ -2287,12 +2287,12 @@ def test_the_default_stack_never_calls_a_real_vendor(compose: dict[str, Any]) ->
         assert "ECET_LLM_PROVIDER" not in compose["services"][service].get("environment", {})
 ```
 
-- [ ] **Step 3: Run them**
+- [x] **Step 3: Run them**
 
 Run: `uv run pytest tests/unit/infrastructure/test_openai_gateway.py tests/unit/test_compose.py -v`
 Expected: the replay test FAILS with `FileNotFoundError: ... tests/fixtures/llm/openai_meets.json`. The compose guard PASSES straight away: it pins a property that already holds, so a later edit cannot quietly break it.
 
-- [ ] **Step 4: Write the recording script**
+- [x] **Step 4: Write the recording script**
 
 Create `scripts/record_vendor_fixture.py`:
 
@@ -2396,7 +2396,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 5: Add the Makefile target and check the refusal path**
+- [x] **Step 5: Add the Makefile target and check the refusal path**
 
 In the `Makefile`, add `record-vendor` to the `.PHONY` line and append:
 
@@ -2470,7 +2470,7 @@ git commit -m "feat(llm): record a live vendor evaluation and replay it in the a
 
 This is the phase's "Done when": resolving a review triggers a webhook with `decided_by=human`.
 
-- [ ] **Step 1: Write the failing compose test**
+- [x] **Step 1: Write the failing compose test**
 
 Append to `tests/unit/test_compose.py`:
 
@@ -2482,12 +2482,12 @@ def test_the_api_waits_for_the_mock_client_it_now_delivers_to(compose: dict[str,
     )
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/unit/test_compose.py -v`
 Expected: FAIL with `KeyError: 'mock-client'`.
 
-- [ ] **Step 3: Add the dependency**
+- [x] **Step 3: Add the dependency**
 
 In `docker-compose.yml`, add to the `api` service's `depends_on` block:
 
@@ -2497,12 +2497,12 @@ In `docker-compose.yml`, add to the `api` service's `depends_on` block:
         condition: service_healthy
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `uv run pytest tests/unit/test_compose.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Resolve the review in `make demo`**
+- [x] **Step 5: Resolve the review in `make demo`**
 
 In the `Makefile`, add near the top (below `DB_URL ?= …`):
 
@@ -2535,7 +2535,7 @@ and replace the last four lines of the `demo` recipe (from `@sleep 5` to the fin
 	curl -s localhost:8081/received | jq '[.[] | {hook, verified, outcome: .payload.outcome, decided_by: .payload.decided_by}]'
 ```
 
-- [ ] **Step 6: Run the checks**
+- [x] **Step 6: Run the checks**
 
 ```bash
 uv run ruff format . && uv run ruff check --fix .
@@ -2545,7 +2545,7 @@ uv run pytest
 ```
 Expected: all green.
 
-- [ ] **Step 7: Run the stack for real**
+- [x] **Step 7: Run the stack for real**
 
 ```bash
 make clean
@@ -2558,7 +2558,7 @@ Expected, in order:
 4. `webhooks received` lists two deliveries, both `verified: true`: one `decided_by: "auto"` with `outcome: "MEETS_NECESSITY"`, and one `decided_by: "human"` with `outcome: "MEETS_NECESSITY"`.
 5. `docker compose logs api | grep review.resolved` shows one line with `claim_status=REVIEW_RESOLVED` and no `notes` field.
 
-- [ ] **Step 8: Exercise the `NOTIFY_FAILED` exit by hand**
+- [x] **Step 8: Exercise the `NOTIFY_FAILED` exit by hand**
 
 ```bash
 docker compose stop mock-client
@@ -2574,18 +2574,18 @@ curl -s -X POST -H "X-API-Key: dev-api-key" localhost:8000/v1/claims/$CLAIM/retr
 ```
 Expected: `502`, then `{"status": "APPROVED_AUTO", "failure_reason": null}`. The mock client keeps deliveries in memory, so the restart emptied `/received`, and `curl -s localhost:8081/received | jq length` is now `1`: the retried delivery, with `decided_by: "auto"`.
 
-- [ ] **Step 9: Confirm `dlq-replay` runs in the stack**
+- [x] **Step 9: Confirm `dlq-replay` runs in the stack**
 
 ```bash
 make dlq-replay LIMIT=10
 ```
 Expected: `replayed 0 message(s) from claims.evaluate.dlq`. The fake provider dead-letters nothing, so this proves the command reaches the broker from the worker container. The replay itself is proven by the adapter test in Task 7.
 
-- [ ] **Step 10 (optional, needs a key): the real vendor through the whole stack**
+- [x] **Step 10 (optional, needs a key): the real vendor through the whole stack**
 
 Set `ECET_LLM_PROVIDER=openai` and `ECET_LLM_API_KEY=<key>` in your local `.env` (never in `.env.example`), then run `make clean && make demo`. The worker log shows `llm.evaluated provider=openai` with real token counts. A 429 dead-letters the claim within a second (deviation 11); `make dlq-replay` puts it back once the rate limit clears. Set `.env` back to `fake` afterwards.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add docker-compose.yml Makefile tests/unit/test_compose.py
@@ -2600,7 +2600,7 @@ git commit -m "feat(compose): the demo resolves its open review as a human"
 - Modify: `specs/06-roadmap.md`
 - Modify: `docs/plans/2026-09-15-phase-5-human-review-ops.md` (this file: tick the boxes)
 
-- [ ] **Step 1: Confirm the plan link**
+- [x] **Step 1: Confirm the plan link**
 
 `## Phase 5 — Human Review & Ops Endpoints` in `specs/06-roadmap.md` already starts with this line, which was added with the plan. Check that it is still there:
 
@@ -2608,7 +2608,7 @@ git commit -m "feat(compose): the demo resolves its open review as a human"
 Plan: [`docs/plans/2026-09-15-phase-5-human-review-ops.md`](../docs/plans/2026-09-15-phase-5-human-review-ops.md).
 ```
 
-- [ ] **Step 2: Add the Phase 5 carry-over table**
+- [x] **Step 2: Add the Phase 5 carry-over table**
 
 Append a `## Carried over from Phase 5` section to `specs/06-roadmap.md`, after the Phase 4 table and before `## Deferred (explicitly out of v1)`. Fill it in from the "Deviations from spec" section at the bottom of this plan **as it actually ends up**. Do not copy the list below verbatim without checking what changed during execution:
 
@@ -2631,7 +2631,7 @@ Every deferral recorded in [`docs/plans/2026-09-15-phase-5-human-review-ops.md`]
 | 10 | No E2E test of resolve → `decided_by=human`; `make demo` is the only end-to-end proof | Phase 6 |
 ```
 
-- [ ] **Step 3: Add the inline Phase 6 carry-over line**
+- [x] **Step 3: Add the inline Phase 6 carry-over line**
 
 In `## Phase 6`, append after the `- Carried from Phase 4:` block:
 
@@ -2639,7 +2639,7 @@ In `## Phase 6`, append after the `- Carried from Phase 4:` block:
 - Carried from Phase 5: no metric on the review or retry paths either, and the webhook POST behind `POST /v1/reviews/{id}/resolve` and `POST /v1/claims/{id}/retry-notify` runs inside the HTTP request and the open unit of work — the api-side twin of the Phase 4 item above, wanting the same pool-usage metric. The README needs `/v1/reviews`, `retry-notify`, `make dlq-replay` and `make record-vendor` (the only thing that ever calls a vendor). The E2E suite should cover resolve → `decided_by=human`, which only `make demo` proves today.
 ```
 
-- [ ] **Step 4: Verify every roadmap link resolves**
+- [x] **Step 4: Verify every roadmap link resolves**
 
 ```bash
 uv run python - <<'PY'
@@ -2658,7 +2658,7 @@ PY
 
 Expected: only the known false positive (`specs/01-domain/policy.md` matches the ICD-10 regex `\.[0-9A-Z]{1,4}` as if it were a link).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add specs/06-roadmap.md docs/plans/2026-09-15-phase-5-human-review-ops.md
