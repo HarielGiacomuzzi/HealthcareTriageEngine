@@ -15,23 +15,15 @@ again — the decision stands, only the delivery failed — so the claim parks i
 
 import structlog
 
-from ecet.application.errors import WebhookError, WebhookPermanentError
 from ecet.application.ports.clock import Clock
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.ports.webhook_client import WebhookClient
 from ecet.application.use_cases.human_review import RequestHumanReview
 from ecet.application.use_cases.notify_client import NotifyClient
 from ecet.domain.claim import Claim, ClaimStatus
-from ecet.domain.errors import TenantNotFound
 from ecet.domain.evaluation import ReviewReason, Route, Verdict, triage
 
 log = structlog.get_logger(__name__)
-
-#: Short tokens, matching the `EXTRACTION_FAILED` convention. The exception detail
-#: lives on `Claim.last_notify_error`, not here.
-REJECTED = "webhook_rejected"
-UNREACHABLE = "webhook_unreachable"
-TENANT_INACTIVE = "tenant_inactive"
 
 
 class RouteDecision:
@@ -68,25 +60,16 @@ class RouteDecision:
             await self._request_review.execute(claim, self._reason_for(claim))
             self._advance(claim, ClaimStatus.REVIEW_PENDING)
         else:
-            try:
-                await self._notify.execute(
-                    claim,
-                    outcome=evaluation.decision,
-                    confidence=evaluation.confidence,
-                    decided_by="auto",
-                )
-            except TenantNotFound as error:
-                # `NotifyClient` reads the tenant before it can attempt a delivery, and
-                # the repository refuses one deactivated between enqueue and evaluate.
-                # Parking the claim keeps the evaluation; letting it escape would roll
-                # the whole unit of work back and leave the claim QUEUED, reasonless.
-                claim.last_notify_error = f"{type(error).__name__}: {error}"
-                self._fail(claim, TENANT_INACTIVE)
-            except WebhookError as error:
-                reason = REJECTED if isinstance(error, WebhookPermanentError) else UNREACHABLE
-                self._fail(claim, reason)
-            else:
+            reason = await self._notify.attempt(
+                claim,
+                outcome=evaluation.decision,
+                confidence=evaluation.confidence,
+                decided_by="auto",
+            )
+            if reason is None:
                 self._advance(claim, ClaimStatus.APPROVED_AUTO)
+            else:
+                self._fail(claim, reason)
 
         await self._uow.claims.save(claim)
 

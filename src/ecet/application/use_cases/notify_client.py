@@ -3,21 +3,28 @@
 One `execute` is one delivery attempt from the claim's point of view — the adapter's
 internal retries are invisible here, so `notification_attempts` counts the times the
 system tried to tell the client, not the number of HTTP requests. The claim is
-mutated but not saved: the caller (UC-07, and UC-09c in Phase 5) owns the unit of
+mutated but not saved: the caller (UC-07, UC-09c, or the operator retry) owns the unit of
 work and decides what the failure means for the claim's status.
 """
 
 import structlog
 
-from ecet.application.errors import WebhookError
+from ecet.application.errors import WebhookError, WebhookPermanentError
 from ecet.application.notifications import ClientNotification, DecidedBy, Outcome
 from ecet.application.ports.clock import Clock
 from ecet.application.ports.webhook_client import WebhookClient
 from ecet.domain.claim import Claim
+from ecet.domain.errors import TenantNotFound
 from ecet.domain.evaluation import Decision
 from ecet.domain.ports.tenant_repository import TenantRepository
 
 log = structlog.get_logger(__name__)
+
+#: `failure_reason` tokens for a delivery that did not happen. Short tokens, matching the
+#: `EXTRACTION_FAILED` convention; the exception detail lives on `Claim.last_notify_error`.
+REJECTED = "webhook_rejected"
+UNREACHABLE = "webhook_unreachable"
+TENANT_INACTIVE = "tenant_inactive"
 
 
 class NotifyClient:
@@ -76,6 +83,31 @@ class NotifyClient:
             attempts=claim.notification_attempts,
         )
         return payload
+
+    async def attempt(
+        self,
+        claim: Claim,
+        *,
+        outcome: Decision,
+        confidence: float,
+        decided_by: DecidedBy,
+    ) -> str | None:
+        """`execute` for a caller that parks the claim instead of propagating: `None`
+        when the webhook was delivered, otherwise the `failure_reason` token to park it
+        under. UC-07, UC-09c and the operator retry all park a failed delivery the same
+        way, so the mapping lives here once."""
+        try:
+            await self.execute(claim, outcome=outcome, confidence=confidence, decided_by=decided_by)
+        except TenantNotFound as error:
+            # The tenant is read before any delivery is attempted, and the repository
+            # refuses one deactivated since the claim was ingested.
+            claim.last_notify_error = f"{type(error).__name__}: {error}"
+            return TENANT_INACTIVE
+        except WebhookPermanentError:
+            return REJECTED
+        except WebhookError:
+            return UNREACHABLE
+        return None
 
 
 def cast_outcome(decision: Decision) -> Outcome:
