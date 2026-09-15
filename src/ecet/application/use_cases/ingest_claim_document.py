@@ -14,7 +14,10 @@ before the error is re-raised.
 
 The publish (step 10) happens *after* the `POLICIES_ATTACHED` commit. A publish that
 fails therefore leaves a durable `POLICIES_ATTACHED` claim that a retry can re-send;
-the transactional outbox that would make this atomic is deferred out of v1.
+the transactional outbox that would make this atomic is deferred out of v1. The retry
+is the same object arriving again — MinIO re-sending the event it got a 503 for, or an
+operator re-posting `/v1/claims/ingest`: the duplicate check re-publishes a claim it
+finds still `POLICIES_ATTACHED` instead of returning it untouched.
 """
 
 from collections.abc import Callable, Sequence
@@ -93,7 +96,9 @@ class IngestClaimDocument:
         async with self._uow_factory() as uow:
             duplicate = await uow.claims.find_by_source(source.bucket, source.key, source.etag)
             if duplicate is not None:
-                # ADR-006: same object, same content — nothing to redo.
+                if duplicate.status is ClaimStatus.POLICIES_ATTACHED:
+                    await self._republish(uow, duplicate)
+                # ADR-006: same object, same content — nothing else to redo.
                 log.info(
                     "claim.duplicate",
                     claim_id=str(duplicate.id),
@@ -164,6 +169,18 @@ class IngestClaimDocument:
         await self._enqueue.execute(claim, policies)
         self._advance(claim, ClaimStatus.QUEUED)
         await uow.claims.save(claim)
+
+    async def _republish(self, uow: UnitOfWork, claim: Claim) -> None:
+        """The retry for a failed publish (step 10). The claim already holds the redacted
+        text, the deterministic result and its policy ids, so only the publish repeats —
+        against the policy versions attached the first time, not whatever is active
+        today. Raises `QueuePublishError` again if the broker is still refusing, leaving
+        the claim exactly as it was."""
+        policies = await uow.policies.get_many(claim.policy_ids)
+        await self._enqueue.execute(claim, policies)
+        self._advance(claim, ClaimStatus.QUEUED)
+        await uow.claims.save(claim)
+        await uow.commit()
 
     async def _read_text(self, source: SourceObject) -> str:
         try:

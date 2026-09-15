@@ -294,3 +294,38 @@ async def test_object_not_found_never_reaches_the_caller_verbatim() -> None:
     # The key embeds a client-supplied filename; the reason token must not carry it.
     assert "note-1.pdf" not in str(caught.value)
     assert not isinstance(caught.value, ObjectNotFound)
+
+
+async def test_the_same_object_arriving_again_re_publishes_a_claim_stuck_before_publish() -> None:
+    # Phase 3 carry-over: a publish failure leaves a durable POLICIES_ATTACHED claim.
+    # MinIO re-sending the event it got a 503 for — or an operator re-posting
+    # /v1/claims/ingest — is the retry.
+    harness = Harness(queue=FakeEvaluationQueue(error=QueuePublishError("no confirm")))
+    with pytest.raises(QueuePublishError):
+        await harness.ingest()
+    harness.queue.error = None
+
+    result = await harness.ingest()
+
+    assert result.duplicate is True
+    assert result.status is ClaimStatus.QUEUED
+    stored = harness.uow.claims.claims[result.claim_id]
+    assert stored.status is ClaimStatus.QUEUED
+    (message,) = harness.queue.published
+    assert message.claim_id == result.claim_id
+    assert [policy.id for policy in message.policies] == stored.policy_ids
+    assert harness.extractor.calls == 1  # nothing before the publish is redone
+    assert_no_pii(message.model_dump_json())
+
+
+async def test_a_re_publish_that_fails_again_leaves_the_claim_policies_attached() -> None:
+    harness = Harness(queue=FakeEvaluationQueue(error=QueuePublishError("no confirm")))
+    with pytest.raises(QueuePublishError):
+        await harness.ingest()
+
+    with pytest.raises(QueuePublishError):
+        await harness.ingest()
+
+    (stored,) = harness.uow.claims.claims.values()
+    assert stored.status is ClaimStatus.POLICIES_ATTACHED
+    assert harness.queue.published == []
