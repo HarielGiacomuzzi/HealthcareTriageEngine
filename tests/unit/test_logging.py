@@ -16,6 +16,7 @@ def test_sensitive_fields_are_dropped() -> None:
         "text": "Patient John Doe, SSN 123-45-6789",
         "raw_text": "same",
         "redacted_text": "same",
+        "notes": "reviewer notes with PII",
         "webhook_secret": "shh",
         "api_key": "shh",
     }

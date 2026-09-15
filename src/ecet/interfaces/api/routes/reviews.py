@@ -8,8 +8,8 @@ redacted text: a reviewer cannot decide without reading the note.
 
 `POST /v1/reviews/{id}/resolve` answers 200 once the decision is recorded, even when
 its webhook then fails. The reviewer's work is done, and `claim_status: NOTIFY_FAILED`
-in the body is the cue for `POST /v1/claims/{id}/retry-notify`. The delivery — up to
-`ECET_WEBHOOK_MAX_ATTEMPTS` attempts with backoff — runs inside the request.
+in the body is the cue for `POST /v1/claims/{id}/retry-notify`. The delivery — one
+attempt, no in-request backoff — runs inside the request; `retry-notify` is the retry.
 """
 
 from typing import Annotated

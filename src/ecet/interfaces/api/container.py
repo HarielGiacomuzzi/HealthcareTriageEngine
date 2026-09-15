@@ -94,9 +94,13 @@ async def build_container(settings: Settings) -> ApiContainer:
     clock = SystemClock()
 
     # UC-09c and the operator retry deliver from the api process, not the worker.
-    webhook = HttpxWebhookClient(
-        timeout_s=settings.webhook_timeout_s, max_attempts=settings.webhook_max_attempts
-    )
+    # max_attempts=1 here, not settings.webhook_max_attempts: POST
+    # /v1/claims/{id}/retry-notify *is* the retry, and both ResolveReview and
+    # RetryNotify park cleanly on a first failure. In-request retries (up to
+    # ~35s of backoff) would hold a pooled connection, and for resolve also
+    # the review-task row lock, while /readyz's database probe shares the
+    # same pool.
+    webhook = HttpxWebhookClient(timeout_s=settings.webhook_timeout_s, max_attempts=1)
 
     def uow_factory() -> UnitOfWork:
         return SqlAlchemyUnitOfWork(session_factory)
