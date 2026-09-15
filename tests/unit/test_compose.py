@@ -81,3 +81,10 @@ def test_the_rabbitmq_healthcheck_does_not_run_as_root(compose: dict[str, Any]) 
     probe = compose["services"]["rabbitmq"]["healthcheck"]["test"]
 
     assert probe[:3] == ["CMD", "gosu", "rabbitmq"]
+
+
+def test_the_api_waits_for_the_mock_client_it_now_delivers_to(compose: dict[str, Any]) -> None:
+    # UC-09c and the operator retry send webhooks from the api process.
+    assert compose["services"]["api"]["depends_on"]["mock-client"]["condition"] == (
+        "service_healthy"
+    )

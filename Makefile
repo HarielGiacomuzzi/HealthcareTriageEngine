@@ -31,6 +31,9 @@ hooks:
 
 DB_URL ?= postgresql+asyncpg://ecet:ecet@localhost:5432/ecet
 
+# Matches `.env.example`. Override when your `.env` uses another key.
+API_KEY ?= dev-api-key
+
 migrate: .env
 	ECET_DATABASE_URL=$(DB_URL) uv run alembic upgrade head
 
@@ -90,5 +93,20 @@ demo: fixtures up
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf tenant-empty || true
 	@sleep 5
 	docker compose logs --since 60s worker
+	@echo "--- resolving the oldest open review for tenant-a as a human ---"
+	@# Polls: the worker may still be evaluating note_unclear when the sleep ends.
+	@for i in $$(seq 1 30); do \
+		TASK=$$(curl -sf -H "X-API-Key: $(API_KEY)" -H "X-Tenant-Id: tenant-a" \
+			localhost:8000/v1/reviews | jq -r '.[0].task_id // empty'); \
+		[ -n "$$TASK" ] && break; \
+		sleep 1; \
+	done; \
+	[ -n "$$TASK" ] || { echo "no open review for tenant-a after 30s; check 'make logs'"; exit 1; }; \
+	curl -sf -H "X-API-Key: $(API_KEY)" -H "X-Tenant-Id: tenant-a" localhost:8000/v1/reviews \
+		| jq '[.[] | {task_id, claim_status, reason}]'; \
+	curl -sf -X POST -H "X-API-Key: $(API_KEY)" -H "X-Tenant-Id: tenant-a" \
+		-H "Content-Type: application/json" \
+		-d '{"reviewer":"demo.reviewer","resolution":"MEETS_NECESSITY","notes":"Therapy dates confirmed."}' \
+		localhost:8000/v1/reviews/$$TASK/resolve | jq .
 	@echo "--- webhooks received by the mock client ---"
-	curl -s localhost:8081/received | jq .
+	curl -s localhost:8081/received | jq '[.[] | {hook, verified, outcome: .payload.outcome, decided_by: .payload.decided_by}]'
