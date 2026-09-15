@@ -107,6 +107,7 @@ async def test_a_human_decision_is_re_sent_as_human_and_resolves() -> None:
     assert payload.outcome == "DOES_NOT_MEET"
     assert payload.confidence == 1.0
     assert uow.claims.claims[claim.id].status is ClaimStatus.REVIEW_RESOLVED
+    assert_no_pii(payload.model_dump_json())
 
 
 async def test_a_retry_that_fails_again_is_still_recorded() -> None:
