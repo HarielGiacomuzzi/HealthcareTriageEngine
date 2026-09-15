@@ -6,6 +6,9 @@ racing the constraint. The caller — not this use case — transitions the clai
 `REVIEW_PENDING`, because only the caller knows whether the claim is also being saved
 in the same unit of work.
 
+UC-09b lists a tenant's open tasks with the redacted note, the deterministic checks
+and the LLM evaluation beside each.
+
 UC-09c records the decision even when its webhook fails. The reviewer's work is done;
 only the delivery is outstanding, so the claim parks in `NOTIFY_FAILED` for the
 operator retry rather than rolling the resolution back. A reviewer's `notes` are
@@ -13,6 +16,7 @@ free text a person typed: they are stored on the task and never logged or sent.
 """
 
 from collections.abc import Callable
+from datetime import datetime
 from uuid import UUID, uuid4
 
 import structlog
@@ -24,8 +28,14 @@ from ecet.application.ports.webhook_client import WebhookClient
 from ecet.application.use_cases.notify_client import NotifyClient
 from ecet.domain.claim import Claim, ClaimStatus
 from ecet.domain.errors import InvalidTransition, ReviewTaskNotFound
-from ecet.domain.evaluation import HumanResolution, ReviewReason, ReviewTask
-from ecet.domain.ids import ClaimId, TenantId
+from ecet.domain.evaluation import (
+    DeterministicResult,
+    Evaluation,
+    HumanResolution,
+    ReviewReason,
+    ReviewTask,
+)
+from ecet.domain.ids import ClaimId, TenantId, TenantIdField
 from ecet.domain.ports.review_task_repository import ReviewTaskRepository
 
 log = structlog.get_logger(__name__)
@@ -50,6 +60,52 @@ class RequestHumanReview:
         )
         await self._review_tasks.add(task)
         return task
+
+
+class ReviewTaskView(BaseModel):
+    """One open review, with what a reviewer reads to decide it (UC-09b).
+
+    The redacted note is here and on no other API response: it is clinical content even
+    after redaction, and the review queue is the one caller that needs it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    task_id: UUID
+    claim_id: ClaimId
+    tenant_id: TenantIdField
+    reason: ReviewReason
+    created_at: datetime
+    claim_status: ClaimStatus
+    redacted_text: str | None
+    deterministic: DeterministicResult | None
+    evaluation: Evaluation | None
+
+    @classmethod
+    def of(cls, task: ReviewTask, claim: Claim) -> "ReviewTaskView":
+        return cls(
+            task_id=task.id,
+            claim_id=task.claim_id,
+            tenant_id=task.tenant_id,
+            reason=task.reason,
+            created_at=task.created_at,
+            claim_status=claim.status,
+            redacted_text=claim.redacted.text if claim.redacted else None,
+            deterministic=claim.deterministic,
+            evaluation=claim.evaluation,
+        )
+
+
+class ListOpenReviews:
+    def __init__(self, *, uow_factory: Callable[[], UnitOfWork]) -> None:
+        self._uow_factory = uow_factory
+
+    async def execute(self, tenant_id: TenantId, limit: int = 50) -> list[ReviewTaskView]:
+        """Tenant-scoped by the repository query itself; there is no cross-tenant list."""
+        async with self._uow_factory() as uow:
+            tasks = await uow.review_tasks.list_open(tenant_id, limit)
+            # ponytail: one claim read per task, bounded by `limit` (the route caps it at
+            # 200); a join in the repository if the queue ever gets long enough to notice.
+            return [ReviewTaskView.of(task, await uow.claims.get(task.claim_id)) for task in tasks]
 
 
 class ResolveReviewCommand(BaseModel):
