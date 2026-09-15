@@ -141,6 +141,7 @@ async def test_the_reviewers_notes_never_reach_the_webhook() -> None:
     body = case.webhook.deliveries[0][1].model_dump_json()
     assert "Ferreira" not in body
     assert "notes" not in body
+    assert_no_pii(body)
 
 
 async def test_resolving_twice_is_an_error_and_notifies_once() -> None:
@@ -197,6 +198,7 @@ async def test_a_claim_that_failed_evaluation_can_be_resolved() -> None:
     payload = case.webhook.deliveries[0][1]
     assert payload.rationale == ""
     assert payload.cited_codes == []
+    assert_no_pii(payload.model_dump_json())
 
 
 async def test_a_claim_that_failed_evaluation_can_park_in_notify_failed() -> None:
