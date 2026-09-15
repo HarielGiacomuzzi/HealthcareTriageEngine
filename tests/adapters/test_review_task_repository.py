@@ -182,3 +182,24 @@ async def test_claim_id_survives_the_round_trip_as_a_claim_id(
         await repository.add(task)
         await session.commit()
         assert (await repository.get(task.id)).claim_id == ClaimId(claim.id)
+
+
+async def test_find_by_claim_returns_a_resolved_task_too(
+    session_factory: async_sessionmaker[AsyncSession], claim: Claim
+) -> None:
+    task = build_task(claim)
+    async with session_factory() as session:
+        repository = PostgresReviewTaskRepository(session)
+        assert await repository.find_by_claim(claim.id) is None
+        await repository.add(task)
+        task.resolve(resolution=Decision.DOES_NOT_MEET, reviewer="nurse", notes=None, now=NOW)
+        await repository.save(task)
+        await session.commit()
+
+    async with session_factory() as session:
+        found = await PostgresReviewTaskRepository(session).find_by_claim(claim.id)
+
+    assert found is not None
+    assert found.id == task.id
+    assert found.status is ReviewStatus.RESOLVED
+    assert found.resolution is Decision.DOES_NOT_MEET

@@ -193,6 +193,16 @@ class PostgresReviewTaskRepository:
         row = (await self._session.scalars(statement)).one_or_none()
         return None if row is None else review_task_from_row(row)
 
+    async def find_by_claim(self, claim_id: ClaimId) -> ReviewTask | None:
+        """Any status. `review_tasks.claim_id` is unique, so this is at most one row."""
+        statement = (
+            select(ReviewTaskRow)
+            .where(ReviewTaskRow.claim_id == claim_id)
+            .execution_options(populate_existing=True)
+        )
+        row = (await self._session.scalars(statement)).one_or_none()
+        return None if row is None else review_task_from_row(row)
+
     async def list_open(self, tenant_id: TenantId, limit: int = 50) -> list[ReviewTask]:
         statement = (
             select(ReviewTaskRow)

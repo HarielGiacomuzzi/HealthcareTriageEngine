@@ -224,3 +224,14 @@ def test_a_whitespace_only_reason_is_not_a_reason() -> None:
     with pytest.raises(InvalidTransition, match="reason"):
         claim.transition(ClaimStatus.EXTRACTION_FAILED, reason="   ", now=LATER)
     assert claim.status is ClaimStatus.RECEIVED
+
+
+def test_a_resolved_evaluation_failure_can_still_fail_delivery() -> None:
+    """UC-09c resolves claims UC-06 parked in EVALUATION_FAILED (it opens a review task
+    for them), and the human decision's webhook can fail like any other."""
+    claim = build_claim(status=ClaimStatus.EVALUATION_FAILED, failure_reason="llm_invalid_output")
+
+    claim.transition(ClaimStatus.NOTIFY_FAILED, reason="webhook_unreachable", now=LATER)
+
+    assert claim.status is ClaimStatus.NOTIFY_FAILED
+    assert claim.failure_reason == "webhook_unreachable"
