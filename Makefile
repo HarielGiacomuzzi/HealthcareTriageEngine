@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model drop demo
+.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model drop demo dlq-replay
 
 install:
 	uv sync
@@ -60,6 +60,11 @@ spacy-model:
 
 drop: fixtures
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf $(or $(TENANT),tenant-a)
+
+# Move dead-lettered evaluations back onto claims.evaluate — the recovery for a claim a
+# vendor 429 dead-lettered (requeue has no delay, so five deliveries go in milliseconds).
+dlq-replay: .env
+	docker compose exec worker ecet dlq-replay --limit $(or $(LIMIT),100)
 
 # `clean` removes the named volumes, including `rabbitdata`. That matters after a
 # topology change: `claims.evaluate` is declared with `x-queue-type: quorum`, and a

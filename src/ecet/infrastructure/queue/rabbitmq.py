@@ -7,6 +7,8 @@ constant here rather than being spelled out at each call site.
 The queue is a quorum queue with `x-delivery-limit=5`: after five failed deliveries
 RabbitMQ itself moves the message to the DLQ, so the worker never has to count
 attempts. Phase 4's consumer imports `declare_topology` from this module.
+
+`ecet dlq-replay` (`replay_dead_letters`) is the operator's way back out of the DLQ.
 """
 
 import asyncio
@@ -61,6 +63,61 @@ async def declare_topology(channel: AbstractChannel) -> Topology:
     await evaluations.bind(exchange, routing_key=ROUTING_KEY)
 
     return Topology(exchange=exchange, queue=evaluations)
+
+
+#: The headers the publisher sets. The broker's own bookkeeping (`x-death`,
+#: `x-delivery-count`, `x-first-death-*`) is dropped so a replayed message starts a
+#: fresh delivery budget.
+REPLAYED_HEADERS: tuple[str, ...] = ("x-tenant-id", "x-schema-version")
+
+
+async def replay_dead_letters(url: str, *, limit: int) -> int:
+    """Move up to `limit` messages from `claims.evaluate.dlq` back onto `claims.evaluate`
+    (`ecet dlq-replay`). Returns how many moved.
+
+    The recovery path for a message the delivery limit gave up on — above all a vendor
+    429, which burns all five immediate redeliveries in milliseconds while the claim
+    stays `QUEUED`. Each message is re-published as a new message and acked off the DLQ
+    only after the broker confirms the publish: a crash mid-replay duplicates a message
+    rather than losing it, and the worker already skips a claim that is no longer
+    `QUEUED`.
+
+    Nothing is re-validated, so a body that did not parse the first time dead-letters
+    again. `limit` also bounds a message that bounces straight back while this runs.
+    """
+    moved = 0
+    connection = await connect_robust(url)
+    async with connection:
+        channel = await connection.channel(publisher_confirms=True)
+        exchange = (await declare_topology(channel)).exchange
+        dead_letters = await channel.get_queue(DLQ)
+        while moved < limit:
+            dead = await dead_letters.get(fail=False)
+            if dead is None:
+                break
+            headers = dead.headers or {}
+            try:
+                await exchange.publish(
+                    Message(
+                        body=dead.body,
+                        content_type=dead.content_type,
+                        delivery_mode=DeliveryMode.PERSISTENT,
+                        message_id=dead.message_id,
+                        headers={k: v for k, v in headers.items() if k in REPLAYED_HEADERS},
+                    ),
+                    routing_key=ROUTING_KEY,
+                )
+            except Exception:
+                await dead.nack(requeue=True)  # back onto the DLQ, untouched
+                raise
+            await dead.ack()
+            moved += 1
+            log.info(
+                "dlq.replayed",
+                message_id=dead.message_id,
+                tenant_id=headers.get("x-tenant-id"),
+            )
+    return moved
 
 
 class RabbitMqEvaluationQueue:

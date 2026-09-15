@@ -1,6 +1,7 @@
 """`ecet` command line: one image, two entrypoints (ADR-007)."""
 
 import asyncio
+from typing import Annotated
 
 import typer
 from pydantic import ValidationError
@@ -63,3 +64,16 @@ def seed() -> None:
             await engine.dispose()
 
     typer.echo(f"seed applied: {asyncio.run(run())} statements")
+
+
+@app.command("dlq-replay")
+def dlq_replay(
+    limit: Annotated[int, typer.Option(min=1, help="Most messages to move.")] = 100,
+) -> None:
+    """Move dead-lettered evaluations back onto claims.evaluate."""
+    from ecet.infrastructure.queue.rabbitmq import replay_dead_letters
+
+    settings = _load_settings()
+    configure_logging(settings.log_level)
+    moved = asyncio.run(replay_dead_letters(settings.amqp_url.get_secret_value(), limit=limit))
+    typer.echo(f"replayed {moved} message(s) from claims.evaluate.dlq")

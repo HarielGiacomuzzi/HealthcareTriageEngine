@@ -77,3 +77,37 @@ def test_invalid_config_exits_one_and_names_the_fields(
     assert result.exit_code == 1
     assert "s3_event_token" in result.output
     assert "api_key" in result.output
+
+
+def test_dlq_replay_moves_messages_and_reports_the_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ECET_S3_EVENT_TOKEN", "tok")
+    monkeypatch.setenv("ECET_API_KEY", "key")
+    monkeypatch.setenv("ECET_AMQP_URL", "amqp://guest:guest@broker:5672/")
+    calls: list[tuple[str, int]] = []
+
+    async def fake_replay(url: str, *, limit: int) -> int:
+        calls.append((url, limit))
+        return 3
+
+    monkeypatch.setattr("ecet.infrastructure.queue.rabbitmq.replay_dead_letters", fake_replay)
+
+    result = runner.invoke(app, ["dlq-replay", "--limit", "7"])
+
+    assert result.exit_code == 0
+    assert calls == [("amqp://guest:guest@broker:5672/", 7)]
+    assert "replayed 3" in result.stdout
+
+
+def test_dlq_replay_refuses_a_non_positive_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ECET_S3_EVENT_TOKEN", "tok")
+    monkeypatch.setenv("ECET_API_KEY", "key")
+
+    result = runner.invoke(app, ["dlq-replay", "--limit", "0"])
+
+    assert result.exit_code == 2
