@@ -57,6 +57,7 @@ Done when: full loop `PDF drop → webhook received by mock-client` with fake LL
 Specs: [UC-06](02-use-cases/UC-06-evaluate-claim.md)–[UC-09](02-use-cases/UC-09-human-review.md), [llm-gateway](03-infrastructure/llm-gateway.md), [webhook-client](03-infrastructure/webhook-client.md), [queue-rabbitmq](03-infrastructure/queue-rabbitmq.md), [worker](04-interfaces/worker.md).
 
 ## Phase 5 — Human Review & Ops Endpoints
+Plan: [`docs/plans/2026-09-15-phase-5-human-review-ops.md`](../docs/plans/2026-09-15-phase-5-human-review-ops.md).
 - [UC-09b](02-use-cases/UC-09-human-review.md#uc-09b-listopenreviews) / [UC-09c](02-use-cases/UC-09-human-review.md#uc-09c-resolvereview), `/v1/reviews*`, `/v1/claims/{id}/retry-notify`, `ecet dlq-replay`.
 - Real vendor run behind env flag; record one real evaluation output as fixture.
 - Carried from Phase 3: a publish failure leaves the claim `POLICIES_ATTACHED` with no retry path yet, and `ClaimView` omits the redacted text that UC-09b needs.
