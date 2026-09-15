@@ -86,6 +86,7 @@ async def test_a_view_carries_what_a_reviewer_reads_to_decide() -> None:
     assert view.redacted_text == claim.redacted.text
     assert view.deterministic == claim.deterministic
     assert view.evaluation == claim.evaluation
+    assert_no_pii(view.model_dump_json())
 
 
 async def test_the_note_in_the_view_is_redacted() -> None:
