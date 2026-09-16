@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from prometheus_client import REGISTRY
 from tests.fakes import (
     FakeEvaluationQueue,
     FakeObjectStorage,
@@ -37,6 +38,10 @@ NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 BUCKET = "claims"
 KEY = "tenants/tenant-a/claims/note-1.pdf"
 PDF = b"%PDF-1.7 fake bytes"
+
+
+def sample(name: str, **labels: str) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
 
 
 def build_tenant(tenant_id: str = "tenant-a", **overrides: Any) -> Tenant:
@@ -349,3 +354,25 @@ async def test_a_transition_log_line_names_where_the_claim_came_from(
     assert all(line["from"] and line["to"] for line in transitions)
     assert transitions[0]["from"] == "RECEIVED"
     assert transitions[0]["to"] == "EXTRACTED"
+
+
+async def test_an_ingest_is_timed_under_its_outcome() -> None:
+    before_ok = sample("ecet_ingest_seconds_count", outcome="ingested")
+    before_dup = sample("ecet_ingest_seconds_count", outcome="duplicate")
+    harness = Harness()
+
+    await harness.ingest()
+    await harness.ingest()  # same object: ADR-006 duplicate
+
+    assert sample("ecet_ingest_seconds_count", outcome="ingested") == before_ok + 1
+    assert sample("ecet_ingest_seconds_count", outcome="duplicate") == before_dup + 1
+
+
+async def test_a_failed_ingest_is_timed_as_failed() -> None:
+    before = sample("ecet_ingest_seconds_count", outcome="failed")
+    harness = Harness(extractor=FakeTextExtractor(error=ExtractionFailed("no_text")))
+
+    with pytest.raises(ExtractionFailed):
+        await harness.ingest()
+
+    assert sample("ecet_ingest_seconds_count", outcome="failed") == before + 1

@@ -12,6 +12,7 @@ import anyio.to_thread
 import structlog
 from pypdf import PasswordType, PdfReader
 
+from ecet import metrics
 from ecet.application.errors import ExtractionFailed
 
 log = structlog.get_logger(__name__)
@@ -34,7 +35,8 @@ class PypdfTextExtractor:
         self._min_chars = min_chars
 
     async def extract(self, pdf: bytes) -> str:
-        return await anyio.to_thread.run_sync(self._extract, pdf)
+        with metrics.PDF_EXTRACT_SECONDS.time():
+            return await anyio.to_thread.run_sync(self._extract, pdf)
 
     def _extract(self, pdf: bytes) -> str:
         try:
