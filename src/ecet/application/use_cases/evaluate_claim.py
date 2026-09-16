@@ -74,12 +74,14 @@ class EvaluateClaim:
                 return
 
             claim.evaluation = evaluation
+            previous = claim.status
             claim.transition(ClaimStatus.EVALUATED, now=self._clock.now())
             log.info(
                 "claim.transition",
                 claim_id=str(claim.id),
                 tenant_id=str(claim.tenant_id),
                 to=ClaimStatus.EVALUATED.value,
+                **{"from": previous.value},
             )
             await uow.claims.save(claim)
 
@@ -135,6 +137,7 @@ class EvaluateClaim:
 
     async def _fail(self, uow: UnitOfWork, claim: Claim, error: Exception) -> None:
         reason = INVALID_OUTPUT if isinstance(error, LLMInvalidOutput) else PERMANENT_ERROR
+        previous = claim.status
         claim.transition(ClaimStatus.EVALUATION_FAILED, reason=reason, now=self._clock.now())
         log.warning(
             "claim.failed",
@@ -143,6 +146,7 @@ class EvaluateClaim:
             to=ClaimStatus.EVALUATION_FAILED.value,
             reason=reason,
             error=type(error).__name__,
+            **{"from": previous.value},
         )
         await RequestHumanReview(uow.review_tasks, self._clock).execute(
             claim, ReviewReason.EVALUATION_FAILED

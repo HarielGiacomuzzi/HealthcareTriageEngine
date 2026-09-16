@@ -81,15 +81,18 @@ class RouteDecision:
         return ReviewReason.LOW_CONFIDENCE
 
     def _advance(self, claim: Claim, status: ClaimStatus) -> None:
+        previous = claim.status
         claim.transition(status, now=self._clock.now())
         log.info(
             "claim.transition",
             claim_id=str(claim.id),
             tenant_id=str(claim.tenant_id),
             to=status.value,
+            **{"from": previous.value},
         )
 
     def _fail(self, claim: Claim, reason: str) -> None:
+        previous = claim.status
         claim.transition(ClaimStatus.NOTIFY_FAILED, reason=reason, now=self._clock.now())
         log.warning(
             "claim.failed",
@@ -97,4 +100,5 @@ class RouteDecision:
             tenant_id=str(claim.tenant_id),
             to=ClaimStatus.NOTIFY_FAILED.value,
             reason=reason,
+            **{"from": previous.value},
         )

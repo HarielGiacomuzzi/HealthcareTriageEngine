@@ -194,15 +194,18 @@ class IngestClaimDocument:
         return text
 
     def _advance(self, claim: Claim, status: ClaimStatus) -> None:
+        previous = claim.status
         claim.transition(status, now=self._clock.now())
         log.info(
             "claim.transition",
             claim_id=str(claim.id),
             tenant_id=str(claim.tenant_id),
             to=status.value,
+            **{"from": previous.value},
         )
 
     async def _fail(self, uow: UnitOfWork, claim: Claim, status: ClaimStatus, reason: str) -> None:
+        previous = claim.status
         claim.transition(status, reason=reason, now=self._clock.now())
         log.warning(
             "claim.failed",
@@ -210,6 +213,7 @@ class IngestClaimDocument:
             tenant_id=str(claim.tenant_id),
             to=status.value,
             reason=reason,
+            **{"from": previous.value},
         )
         await uow.claims.save(claim)
         await uow.commit()

@@ -1,6 +1,7 @@
 """UC-01 against fakes only. Every test asserts on the claim as it was *persisted*,
 because that is where an ADR-001 leak would show up."""
 
+import json
 from datetime import UTC, date, datetime
 from typing import Any
 from uuid import uuid4
@@ -30,6 +31,7 @@ from ecet.domain.evaluation import ReviewReason, ReviewStatus
 from ecet.domain.ids import PolicyId, TenantId
 from ecet.domain.policy import Policy
 from ecet.domain.tenant import Tenant
+from ecet.infrastructure.observability.logging import configure_logging
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 BUCKET = "claims"
@@ -329,3 +331,21 @@ async def test_a_re_publish_that_fails_again_leaves_the_claim_policies_attached(
     (stored,) = harness.uow.claims.claims.values()
     assert stored.status is ClaimStatus.POLICIES_ATTACHED
     assert harness.queue.published == []
+
+
+async def test_a_transition_log_line_names_where_the_claim_came_from(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The observability spec asks for one `claim.transition` per state change, with
+    `from`, `to` and `reason` — `to` alone does not say what moved."""
+    configure_logging("INFO")
+    harness = Harness()
+
+    await harness.ingest()
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    transitions = [line for line in lines if line["event"] == "claim.transition"]
+    assert transitions, "no claim.transition line was logged"
+    assert all(line["from"] and line["to"] for line in transitions)
+    assert transitions[0]["from"] == "RECEIVED"
+    assert transitions[0]["to"] == "EXTRACTED"
