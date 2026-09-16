@@ -13,6 +13,12 @@ UC-09c records the decision even when its webhook fails. The reviewer's work is 
 only the delivery is outstanding, so the claim parks in `NOTIFY_FAILED` for the
 operator retry rather than rolling the resolution back. A reviewer's `notes` are
 free text a person typed: they are stored on the task and never logged or sent.
+
+The delivery runs between two units of work: a read-only one validates the request and
+closes, the webhook POST runs with no transaction open, and a second one records the
+resolution and the delivery's outcome. Two concurrent resolves can both reach the POST
+before one loses at `task.resolve` — the receiver's dedupe key is `claim_id` in the
+body, as Phase 4 deviation #3 already documents.
 """
 
 from collections.abc import Callable
@@ -27,16 +33,23 @@ from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.ports.webhook_client import WebhookClient
 from ecet.application.use_cases.notify_client import NotifyClient, tenant_inactive
 from ecet.domain.claim import Claim, ClaimStatus
-from ecet.domain.errors import InvalidTransition, ReviewTaskNotFound, TenantNotFound
+from ecet.domain.errors import (
+    InvalidTransition,
+    ReviewAlreadyResolved,
+    ReviewTaskNotFound,
+    TenantNotFound,
+)
 from ecet.domain.evaluation import (
     DeterministicResult,
     Evaluation,
     HumanResolution,
     ReviewReason,
+    ReviewStatus,
     ReviewTask,
 )
 from ecet.domain.ids import ClaimId, TenantId, TenantIdField
 from ecet.domain.ports.review_task_repository import ReviewTaskRepository
+from ecet.domain.tenant import Tenant
 
 log = structlog.get_logger(__name__)
 
@@ -142,20 +155,15 @@ class ResolveReview:
         self._clock = clock
 
     async def execute(self, command: ResolveReviewCommand) -> ResolveReviewResult:
-        async with self._uow_factory() as uow:
+        async with self._uow_factory() as uow:  # read-only: validates and closes
             task = await uow.review_tasks.get(command.task_id)
             if task.tenant_id != command.tenant_id:
                 # Same answer as "no such task": anything else confirms it exists.
                 raise ReviewTaskNotFound(str(command.task_id))
-
-            now = self._clock.now()
-            # Raises `ReviewAlreadyResolved` before anything has been sent.
-            task.resolve(
-                resolution=command.resolution,
-                reviewer=command.reviewer,
-                notes=command.notes,
-                now=now,
-            )
+            if task.status is ReviewStatus.RESOLVED:
+                # Checked here so nothing is delivered for a decision already made;
+                # `task.resolve` below raises the same error if it loses a race.
+                raise ReviewAlreadyResolved(str(task.id))
             claim = await uow.claims.get(task.claim_id)
             if not claim.status.can_transition_to(ClaimStatus.REVIEW_RESOLVED):
                 # Checked before the webhook: a delivery the transition then refused
@@ -163,16 +171,47 @@ class ResolveReview:
                 raise InvalidTransition(
                     f"claim {claim.id} is {claim.status}, which a review cannot resolve"
                 )
+            tenant_or_error = await self._tenant(uow, claim)
+
+        # Outside the transaction: one attempt, no in-request backoff, and no pooled
+        # connection held for it (`retry-notify` is the operator's retry).
+        if isinstance(tenant_or_error, TenantNotFound):
+            delivery = tenant_inactive(tenant_or_error)
+        else:
+            delivery = await NotifyClient(self._webhook, self._clock).attempt(
+                claim,
+                tenant_or_error,
+                outcome=command.resolution,
+                confidence=1.0,
+                decided_by="human",
+            )
+
+        async with self._uow_factory() as uow:  # every write
+            now = self._clock.now()
+            task = await uow.review_tasks.get(command.task_id)
+            try:
+                # Raises `ReviewAlreadyResolved` if another request resolved the task
+                # while the POST above was in flight. That request's decision stands;
+                # this one's does not, but its webhook already reached the client, so
+                # the loss is logged rather than swallowed silently.
+                task.resolve(
+                    resolution=command.resolution,
+                    reviewer=command.reviewer,
+                    notes=command.notes,
+                    now=now,
+                )
+            except ReviewAlreadyResolved:
+                log.warning(
+                    "review.resolve_lost_race",
+                    task_id=str(task.id),
+                    claim_id=str(claim.id),
+                    tenant_id=str(claim.tenant_id),
+                    delivery_attempted=delivery.attempted,
+                )
+                raise
             await uow.review_tasks.save(task)
 
-            try:
-                tenant = await uow.tenants.get(claim.tenant_id)
-            except TenantNotFound as error:
-                delivery = tenant_inactive(error)
-            else:
-                delivery = await NotifyClient(self._webhook, self._clock).attempt(
-                    claim, tenant, outcome=command.resolution, confidence=1.0, decided_by="human"
-                )
+            claim = await uow.claims.get(task.claim_id)
             delivery.apply_to(claim)
             if delivery.succeeded:
                 claim.transition(ClaimStatus.REVIEW_RESOLVED, now=now)
@@ -190,3 +229,14 @@ class ResolveReview:
             claim_status=claim.status.value,
         )
         return ResolveReviewResult(task_id=task.id, claim_id=claim.id, claim_status=claim.status)
+
+    async def _tenant(self, uow: UnitOfWork, claim: Claim) -> Tenant | TenantNotFound:
+        """Read before the transaction closes, because the delivery happens after it.
+        A tenant deactivated since the review was requested is not an error here — it
+        is a delivery that will never happen, and the claim parks under
+        `tenant_inactive`. Returned as one value rather than an `(ok, error)` pair so
+        the caller narrows with `isinstance` instead of an `assert`."""
+        try:
+            return await uow.tenants.get(claim.tenant_id)
+        except TenantNotFound as error:
+            return error

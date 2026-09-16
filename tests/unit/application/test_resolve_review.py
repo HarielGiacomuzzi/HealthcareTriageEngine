@@ -125,12 +125,26 @@ async def test_resolving_records_the_decision_and_notifies_as_human() -> None:
     assert payload.outcome == "DOES_NOT_MEET"
     assert payload.confidence == 1.0
     assert payload.claim_id == case.claim.id
+    # The claim handed to the webhook must carry its evaluation: a bare re-read after
+    # the write transaction closes would ship a blank rationale and no cited codes.
+    assert case.claim.evaluation is not None
+    assert payload.rationale == case.claim.evaluation.rationale
     assert case.stored_claim().status is ClaimStatus.REVIEW_RESOLVED
     assert result.task_id == case.task.id
     assert result.claim_id == case.claim.id
     assert result.claim_status is ClaimStatus.REVIEW_RESOLVED
     assert case.uow.commits == 1
     assert_no_pii(payload.model_dump_json())
+
+
+async def test_the_webhook_is_delivered_with_no_transaction_open() -> None:
+    case = await build_case()
+    case.webhook.watch = case.uow
+
+    await case.use_case.execute(case.command())
+
+    assert case.webhook.uow_open_during_call == [False]
+    assert case.uow.entries == 2
 
 
 async def test_the_reviewers_notes_never_reach_the_webhook() -> None:
@@ -153,6 +167,17 @@ async def test_resolving_twice_is_an_error_and_notifies_once() -> None:
 
     assert len(case.webhook.deliveries) == 1
     assert case.stored_task().resolution is Decision.DOES_NOT_MEET
+
+
+async def test_an_already_resolved_task_is_refused_before_anything_is_sent() -> None:
+    case = await build_case()
+    case.task.status = ReviewStatus.RESOLVED
+
+    with pytest.raises(ReviewAlreadyResolved):
+        await case.use_case.execute(case.command())
+
+    assert case.webhook.deliveries == []
+    assert case.uow.commits == 0
 
 
 async def test_a_cross_tenant_resolve_is_not_found() -> None:
