@@ -88,18 +88,18 @@ No API key is needed: `ECET_LLM_PROVIDER=fake` is the default, so the stack make
 Every route except `/healthz`, `/readyz` and `/metrics` needs `X-API-Key` (dev: `dev-api-key`). Tenant-scoped routes also need `X-Tenant-Id`. Every response carries `X-Request-Id`; the same id appears on every api and worker log line for that claim.
 
 ```bash
-H='-H X-API-Key:dev-api-key -H X-Tenant-Id:tenant-a'
-
 # The review queue (redacted note included — the only response that carries it)
-curl -s $H localhost:8000/v1/reviews | jq '[.[] | {task_id, claim_id, reason}]'
+curl -s -H X-API-Key:dev-api-key -H X-Tenant-Id:tenant-a \
+  localhost:8000/v1/reviews | jq '[.[] | {task_id, claim_id, reason}]'
 
 # Resolve one
-curl -s $H -H 'Content-Type: application/json' \
+curl -s -H X-API-Key:dev-api-key -H X-Tenant-Id:tenant-a -H 'Content-Type: application/json' \
   -d '{"reviewer":"jane.doe","resolution":"MEETS_NECESSITY","notes":"Dates confirmed."}' \
   localhost:8000/v1/reviews/<task_id>/resolve | jq
 
 # A claim
-curl -s $H localhost:8000/v1/claims/<claim_id> | jq '{status, failure_reason, evaluation}'
+curl -s -H X-API-Key:dev-api-key -H X-Tenant-Id:tenant-a \
+  localhost:8000/v1/claims/<claim_id> | jq '{status, failure_reason, evaluation}'
 
 # Re-send a decision whose webhook failed (NOTIFY_FAILED → 200 when it lands, 502 when it fails again)
 curl -s -X POST -H X-API-Key:dev-api-key localhost:8000/v1/claims/<claim_id>/retry-notify | jq
@@ -135,7 +135,7 @@ uv run pytest -m slow   # adapter tests against real Postgres, RabbitMQ, MinIO, 
 make e2e            # the E2E suite against the compose stack (starts it if needed)
 ```
 
-CI runs three jobs: `check` (every commit), `slow` (adapters, 85 % coverage gate, the model wheel cached by version) and `e2e` (the compose stack, fake LLM). Layer rules are enforced by import-linter; the domain and application layers are `mypy --strict`. Test strategy: [testing spec](specs/05-platform/testing.md).
+CI runs three jobs: `check` (push to `main` and pull requests), `slow` (adapters, 85 % coverage gate, the model wheel cached by version) and `e2e` (the compose stack, fake LLM). Layer rules are enforced by import-linter; the domain and application layers are `mypy --strict`. Test strategy: [testing spec](specs/05-platform/testing.md).
 
 ### Image size
 
