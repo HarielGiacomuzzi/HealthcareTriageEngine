@@ -61,6 +61,16 @@ def build_all(destination: Path) -> dict[str, Path]:
     target.save()
     built["note_multipage"] = multipage
 
+    # One note per page, all five — the pdf-text-extractor spec's "5-page fixture"
+    # that its <200 ms soft budget is measured against.
+    five_pages = destination / "note_five_pages.pdf"
+    target = canvas.Canvas(str(five_pages), pagesize=LETTER)
+    for note in ("meets", "does_not_meet", "unclear", "excluded_code", "no_codes"):
+        _write_lines(target, _note_lines(note))
+        target.showPage()
+    target.save()
+    built["note_five_pages"] = five_pages
+
     # No text operators at all — the stand-in for a scanned page. OCR is out of scope
     # for v1, so this must fail extraction rather than half-succeed.
     scanned = destination / "scanned.pdf"

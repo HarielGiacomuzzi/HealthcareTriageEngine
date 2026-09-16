@@ -85,3 +85,10 @@ async def test_a_missing_key_raises_object_not_found_on_head(
 async def test_a_missing_bucket_raises_object_not_found(storage: S3ObjectStorage) -> None:
     with pytest.raises(ObjectNotFound):
         await storage.get_bytes("no-such-bucket", KEY)
+
+
+async def test_a_missing_bucket_raises_object_not_found_on_head(storage: S3ObjectStorage) -> None:
+    """`POST /v1/claims/ingest` HEADs before anything else. A bucket that is not there
+    must be the same 404 as a key that is not there, not a raw `ClientError` 500."""
+    with pytest.raises(ObjectNotFound):
+        await storage.head("no-such-bucket", KEY)

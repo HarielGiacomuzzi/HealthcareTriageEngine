@@ -54,11 +54,16 @@ async def assert_at_head(engine: AsyncEngine) -> None:
         await connection.run_sync(_assert_at_head)
 
 
-def _assert_at_head(connection: Connection) -> None:
+def head_revision() -> str | None:
+    """The newest revision in `migrations/` — what a database at head is stamped with."""
     root = project_root()
     config = Config(str(root / "alembic.ini"))
     config.set_main_option("script_location", str(root / "migrations"))
-    head = ScriptDirectory.from_config(config).get_current_head()
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
+def _assert_at_head(connection: Connection) -> None:
+    head = head_revision()
     current = MigrationContext.configure(connection).get_current_revision()
     if current != head:
         raise RuntimeError(f"pending migration: database at {current!r}, code expects {head!r}")
