@@ -22,6 +22,7 @@ dependencies = [
     "aio-pika>=9.4,<10",
     "httpx>=0.27,<0.28",
     "openai>=1.60,<2",
+    "prometheus-client>=0.21,<1",
 ]
 
 [project.scripts]
@@ -125,3 +126,9 @@ forbidden_modules = [
     "presidio_anonymizer",
     "ecet.config",
 ]
+
+[[tool.importlinter.contracts]]
+name = "The domain stays metrics-free"
+type = "forbidden"
+source_modules = ["ecet.domain"]
+forbidden_modules = ["prometheus_client", "ecet.metrics"]
