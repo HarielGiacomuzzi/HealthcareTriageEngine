@@ -58,8 +58,12 @@ ps: .env
 fixtures:
 	uv run python scripts/make_fixtures.py
 
+SPACY_MODEL ?= en_core_web_lg
+# Keep in step with the Dockerfile and ci.yml (tests/unit/test_spacy_pin.py).
+SPACY_MODEL_VERSION ?= 3.8.0
+
 spacy-model:
-	uv run python -m spacy download $(or $(SPACY_MODEL),en_core_web_lg)
+	uv run python -m spacy download $(SPACY_MODEL)-$(SPACY_MODEL_VERSION) --direct
 
 drop: fixtures
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf $(or $(TENANT),tenant-a)

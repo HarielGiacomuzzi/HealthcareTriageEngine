@@ -42,6 +42,9 @@ jobs:
 
   slow:
     runs-on: ubuntu-latest
+    env:
+      # Keep in step with the Dockerfile and Makefile (tests/unit/test_spacy_pin.py).
+      SPACY_MODEL_VERSION: "3.8.0"
     steps:
       - uses: actions/checkout@v7
 
@@ -55,8 +58,23 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen
 
-      - name: Download the spaCy model
-        run: uv run python -m spacy download en_core_web_lg
+      # 590 MB. Cached as a wheel keyed on the pinned version, so a cache hit is a
+      # local install and a version bump is a cache miss by construction.
+      - name: Cache the spaCy model wheel
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/spacy-models
+          key: spacy-en_core_web_lg-${{ env.SPACY_MODEL_VERSION }}
+
+      - name: Install the pinned spaCy model
+        run: |
+          WHEEL="en_core_web_lg-${SPACY_MODEL_VERSION}-py3-none-any.whl"
+          mkdir -p ~/.cache/spacy-models
+          if [ ! -f ~/.cache/spacy-models/"$WHEEL" ]; then
+            curl -fsSL -o ~/.cache/spacy-models/"$WHEEL" \
+              "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-${SPACY_MODEL_VERSION}/$WHEEL"
+          fi
+          uv pip install ~/.cache/spacy-models/"$WHEEL"
 
       - name: Full suite with adapters (testcontainers)
         run: uv run pytest -m 'not e2e' --cov=ecet --cov-report=term-missing --cov-fail-under=85
