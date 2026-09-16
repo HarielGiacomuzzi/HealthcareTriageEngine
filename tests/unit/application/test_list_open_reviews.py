@@ -114,6 +114,7 @@ async def test_a_resolved_review_is_not_listed() -> None:
     uow = FakeUnitOfWork()
     task = await seed_review(uow)
     task.resolve(resolution=Decision.MEETS_NECESSITY, reviewer="nurse", notes=None, now=NOW)
+    await uow.review_tasks.save(task)
 
     assert await build_use_case(uow).execute(TENANT) == []
 

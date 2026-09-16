@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from prometheus_client import REGISTRY
 from tests.fakes import FakePiiRedactor
 from tests.pii import read_note
 
@@ -13,6 +14,11 @@ from ecet.application.use_cases.run_deterministic_checks import RunDeterministic
 from ecet.domain.evaluation import Verdict
 from ecet.domain.ids import PolicyId
 from ecet.domain.policy import Policy
+
+
+def sample(name: str, **labels: str) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
+
 
 TENANT_A_MRI = {
     "id": PolicyId(uuid4()),
@@ -60,3 +66,25 @@ async def test_every_check_is_reported_not_only_the_failing_ones() -> None:
         "excluded_code_hit",
         "covered_code_hit",
     ]
+
+
+async def test_a_verdict_is_counted() -> None:
+    before = sample("ecet_deterministic_verdict_total", verdict="PASS")
+    redacted = await FakePiiRedactor().redact(read_note("meets"))
+
+    result = await RunDeterministicChecks().execute(redacted, policies())
+
+    assert result.verdict is Verdict.PASS
+    assert sample("ecet_deterministic_verdict_total", verdict="PASS") == before + 1
+
+
+async def test_a_reject_counts_an_avoided_llm_call() -> None:
+    """ADR-002's whole argument, as a number: a deterministic REJECT never reaches
+    the vendor."""
+    before = sample("ecet_llm_calls_avoided_total")
+    redacted = await FakePiiRedactor().redact(read_note("excluded_code"))
+
+    result = await RunDeterministicChecks().execute(redacted, policies())
+
+    assert result.verdict is Verdict.REJECT
+    assert sample("ecet_llm_calls_avoided_total") == before + 1

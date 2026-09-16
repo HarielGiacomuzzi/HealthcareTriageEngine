@@ -65,16 +65,26 @@ Plan: [`docs/plans/2026-09-15-phase-5-human-review-ops.md`](../docs/plans/2026-0
 Done when: resolving review triggers webhook `decided_by=human`.
 Specs: [UC-09](02-use-cases/UC-09-human-review.md), [api](04-interfaces/api.md).
 
-## Phase 6 — Observability & Polish
-- structlog + redaction guard, metrics, `claims_by_status` gauge, optional Prometheus/Grafana profile.
-- E2E test suite; README rewrite: diagrams (workflow + integration), ADR section, quickstart verified < 2 min after image cached, cost-saving numbers from metrics.
-- Carried from Phase 0: `/metrics` server + worker container healthcheck against it; CI `e2e` job (`pytest -m e2e`); close the uvicorn logging seam — `cli.py api` passes `log_config=None`, so `uvicorn.error`/`uvicorn.access` records go to the stdlib root handler and bypass the structlog `drop_sensitive_fields` guard (ADR-001 backstop). Route uvicorn through structlog and assert it in a log-capture test.
-- Carried from Phase 3: no metric is emitted anywhere in the ingestion path (`ecet_ingest_seconds`, `ecet_pdf_extract_seconds`, `ecet_pii_redaction_seconds`, `ecet_pii_entities_total`, `ecet_deterministic_verdict_total`, `ecet_llm_calls_avoided_total`), and the UC-04 metrics hook is a comment; `request_id` is neither bound to the structlog context nor propagated to the queue as `x-request-id`; the README needs the ~1.5 GB image-size note, a `make spacy-model` mention, and a note that v1 auth is a static API key while production would use per-tenant keys or JWT; CI re-downloads the 590 MB spaCy model uncached on every `slow` run and `spacy download` resolves an unpinned model version — wants `actions/cache` keyed on a pinned version.
-- Carried from Phase 3 (small review gaps, none blocking): the fake redactor's bare `Whitfield` entry has no standalone fixture; UC-01's ADR-001 assertion checks only the final stored claim, not every `claims.save` argument; no test covers a duplicate whose original status is not `QUEUED`, one proving the duplicate check precedes the tenant lookup, `ObjectStorage.head()` against a missing bucket, or the pdf extractor's "5-page fixture under 200 ms" budget; `tests/adapters/test_migrations.py` hardcodes revision `'0001_initial'` and never exercises an unstamped database; a failure mid-`build_container` leaks the engine, and `/readyz` with an empty probes map returns 200. Three naming fixes belong here too: UC-01 raises `ExtractionFailed("empty_text")` while the pypdf adapter raises `"no_text"` for the same condition and `empty_text` is absent from the token list in `application/errors.py`; `failure_reason` for `NO_POLICIES` is the bare tenant slug instead of a short token; `handle_unmapped` logs no `claim_id`, which [api](04-interfaces/api.md) requires.
-- Carried from Phase 4: no metric is emitted on the worker path either (`ecet_llm_calls_total`, `ecet_llm_latency_seconds`, `ecet_llm_tokens_total`, `ecet_triage_route_total`, `ecet_webhook_attempts_total`), and the worker still has no `/metrics` server, so its compose healthcheck is still missing. The README needs the note that the mock client verifies the HMAC but not the timestamp's freshness, and that `make clean` is required after a queue-topology change. Two more: the LLM call and the webhook POST run inside the open unit of work, so a Postgres connection sits idle-in-transaction for the vendor call and the whole webhook retry schedule — up to ~65s per message, `worker_prefetch` connections per worker — and nothing records it, which makes a pool-usage metric the first thing this phase should add there. And two paths ship untested: `RabbitMqConsumer.is_healthy`'s reconnect check, and `stop()`'s in-flight drain, which no test exercises with `_in_flight > 0`.
-- Carried from Phase 5: no metric on the review or retry paths either, and the webhook POST behind `POST /v1/reviews/{id}/resolve` and `POST /v1/claims/{id}/retry-notify` runs inside the HTTP request and the open unit of work — the api-side twin of the Phase 4 item above, wanting the same pool-usage metric. Unlike the worker's prefetch-bounded concurrency, the api path is unbounded (no prefetch equivalent), and `/readyz`'s database probe shares the same pool, so the fix here has to move the POST out of the request, not just measure it. The README needs `/v1/reviews`, `retry-notify` and `make dlq-replay`. The E2E suite should cover resolve → `decided_by=human`, which only `make demo` proves today.
-Done when: README quickstart reproduces demo from clean clone.
-Specs: [observability](05-platform/observability.md), [testing](05-platform/testing.md).
+## Phase 6 — Observability
+Plan: [`docs/plans/2026-09-16-phase-6-observability.md`](../docs/plans/2026-09-16-phase-6-observability.md).
+- `configure_logging` grows a stdlib bridge (`structlog.stdlib.ProcessorFormatter`) so uvicorn's own records (`cli.py api` passes `log_config=None`) render through the same ADR-001 `drop_sensitive_fields` guard as ours, closing Phase 0 carry-over #12.
+- `request_id` travels in `structlog.contextvars`: an HTTP middleware binds it and echoes it on the response, `RabbitMqEvaluationQueue.publish` stamps it as `x-request-id` on the message, and `RabbitMqConsumer._on_message` binds it (with `message_id`, `claim_id`, `tenant_id`) back into the worker's logs.
+- `/metrics` is mounted on the api (`prometheus_client.make_asgi_app()`) and served by the worker on `:9100` (`prometheus_client.start_http_server`), each from its own process-global registry.
+- `src/ecet/metrics.py` holds every `ecet_*` series the observability spec lists — `ecet_ingest_seconds`, `ecet_pdf_extract_seconds`, `ecet_pii_redaction_seconds`, `ecet_pii_entities_total`, `ecet_deterministic_verdict_total`, `ecet_llm_calls_avoided_total`, `ecet_llm_calls_total`, `ecet_llm_latency_seconds`, `ecet_llm_tokens_total`, `ecet_triage_route_total`, `ecet_webhook_attempts_total`, `ecet_claims_by_status`, `ecet_review_open` — plus `ecet_db_pool_in_use`, an addition the spec's table did not list.
+- The worker refreshes `ecet_claims_by_status` and `ecet_review_open` on a timer (`interfaces/worker/gauges.py`), and its container finally has a healthcheck, probing its own `/metrics`, closing Phase 0 carry-over #5.
+- The LLM call and the webhook POST move outside the unit of work in `EvaluateClaim` (UC-06), `ResolveReview` (UC-09c) and `RetryNotify`: each opens a read-only unit of work, closes it, makes the slow call with no connection held, then opens a second unit of work for the only writes — closing Phase 4 carry-over #11 and Phase 5 carry-over #2.
+- Deviations from the plan, and the phase that closes each: [Carried over from Phase 6](#carried-over-from-phase-6).
+Done when: a claim can be followed by one `request_id` from the api's response header into the worker's logs, and `/metrics` on both processes carries every series in the observability spec.
+Specs: [observability](05-platform/observability.md), [config](05-platform/config.md), [docker-compose](05-platform/docker-compose.md), [testing](05-platform/testing.md).
+
+## Phase 7 — Polish & E2E
+- `tests/e2e/`, the E2E suite and the CI `e2e` job (`pytest -m e2e`), including the worker's end-to-end demo assertions and a test that resolving a review ends in `decided_by=human` — today only `make demo` proves that.
+- The README rewrite: `/v1/reviews`, `retry-notify`, `make dlq-replay`, the ~1.5 GB image-size note, the `make spacy-model` mention, the static-API-key note (v1 auth is one global key; production would use per-tenant keys or JWT), the mock client's missing timestamp-freshness check, the `make clean`-after-topology-change note, the quickstart verified under 2 minutes after the image is cached, diagrams (workflow + integration), an ADR section, and cost-saving numbers now that the metrics exist to compute them.
+- The CI spaCy model cache (`actions/cache`) and a pinned `en_core_web_lg` version — CI re-downloads the 590 MB model uncached on every `slow` run today, and `spacy download` resolves an unpinned version.
+- The optional `observability` compose profile — Prometheus, Grafana, dashboard JSON. Phase 6 shipped the endpoints; scraping them was dropped from Phase 6 by the user's decision, not scheduled elsewhere.
+- The small test and naming gaps carried from Phases 3–5: `empty_text`/`no_text`, the `NO_POLICIES` failure reason, `handle_unmapped`'s missing `claim_id`, the `Whitfield` fixture, the `claims.save` argument assertion, the duplicate-status tests, `ObjectStorage.head()` against a missing bucket, the pdf perf budget, `test_migrations.py`'s hardcoded revision, the `build_container` engine leak, empty-probes `/readyz`, `RabbitMqConsumer.is_healthy` and `stop()`'s drain.
+Done when: README quickstart reproduces demo from clean clone in under 2 minutes; `pytest -m e2e` is green in CI.
+Specs: [testing](05-platform/testing.md).
 
 ## Carried over from Phase 0
 
@@ -87,17 +97,17 @@ Every deferral recorded in [`docs/plans/2026-09-04-phase-0-skeleton-tooling.md`]
 | 3 | `minio-setup` compose service | Phase 3 |
 | 3b | `mock-client` compose service | Phase 4 |
 | 4 | api healthcheck probes `/healthz`; `/readyz` does not exist | Phase 3 |
-| 5 | worker container has no healthcheck (needs the `/metrics` server) | Phase 6 |
+| 5 | worker container has no healthcheck (needs the `/metrics` server) | Phase 6 — closed |
 | 6 | Coverage thresholds enforced in CI only, not locally | accepted, permanent |
 | 7 | `ruff extend-exclude = ["docs", "specs"]` — ruff 0.16 reformats Python fences in Markdown | accepted, permanent |
 | 8 | `include_external_packages = true` required by import-linter 2.14 for `forbidden` contracts | accepted, permanent |
 | 9 | `"ecet.config"` in `forbidden_modules` only once it is in the import graph | closed in Phase 0 |
 | 10 | `_no_ambient_ecet_env` autouse fixture strips `ECET_*` from `os.environ` per test | accepted, permanent |
 | 11 | pre-commit ruff rev pinned to the version `uv.lock` resolves; re-pin on every ruff bump | accepted, permanent |
-| 12 | uvicorn stdlib log records bypass the structlog `drop_sensitive_fields` guard (ADR-001) | Phase 6 — Phase 3+ adapters must not log via stdlib until then |
+| 12 | uvicorn stdlib log records bypass the structlog `drop_sensitive_fields` guard (ADR-001) | Phase 6 — closed |
 | — | Alembic, seeds, `ecet seed`, `ecet dlq-replay` | Phases 2 / 5 |
 | — | testcontainers + CI `slow` job | Phase 2 |
-| — | CI `e2e` job | Phase 6 |
+| — | CI `e2e` job | Phase 7 |
 | — | `tests/fakes.py`, `assert_no_pii`, `tests/fixtures/` from the [testing spec](05-platform/testing.md) | Phase 1 (repository fakes) / Phase 3 (the rest) |
 
 ## Carried over from Phase 1
@@ -138,10 +148,10 @@ Every deferral recorded in [`docs/plans/2026-09-06-phase-3-ingestion-path.md`](.
 |---|---------------------|-----------|
 | 1 | A publish failure leaves the claim `POLICIES_ATTACHED` with no retry path (the outbox stays out of v1) | Phase 5 |
 | 2 | `ClaimView` omits the redacted text that UC-09b will need | Phase 5 |
-| 3 | No metrics anywhere in the ingestion path: `ecet_ingest_seconds`, `ecet_pdf_extract_seconds`, `ecet_pii_redaction_seconds`, `ecet_pii_entities_total`, `ecet_deterministic_verdict_total`, `ecet_llm_calls_avoided_total` are all unimplemented, and UC-04's metrics hook is a comment | Phase 6 |
-| 4 | `request_id` is neither bound to the structlog context nor propagated to the queue as `x-request-id` | Phase 6 |
-| 5 | README gaps: the ~1.5 GB image-size note, a `make spacy-model` mention, and a note that v1 auth is a static API key while production would use per-tenant keys or JWT | Phase 6 |
-| 6 | CI re-downloads the 590 MB spaCy model uncached on every `slow` run, and `spacy download` resolves an unpinned model version | Phase 6 — wants `actions/cache` keyed on a pinned version |
+| 3 | No metrics anywhere in the ingestion path: `ecet_ingest_seconds`, `ecet_pdf_extract_seconds`, `ecet_pii_redaction_seconds`, `ecet_pii_entities_total`, `ecet_deterministic_verdict_total`, `ecet_llm_calls_avoided_total` are all unimplemented, and UC-04's metrics hook is a comment | Phase 6 — closed |
+| 4 | `request_id` is neither bound to the structlog context nor propagated to the queue as `x-request-id` | Phase 6 — closed |
+| 5 | README gaps: the ~1.5 GB image-size note, a `make spacy-model` mention, and a note that v1 auth is a static API key while production would use per-tenant keys or JWT | Phase 7 |
+| 6 | CI re-downloads the 590 MB spaCy model uncached on every `slow` run, and `spacy download` resolves an unpinned model version | Phase 7 — wants `actions/cache` keyed on a pinned version |
 | 7 | `infrastructure/queue/in_memory.py` and `infrastructure/pii/fake_redactor.py` from the layout spec were not built; `tests/fakes.py` covers both needs | accepted, permanent |
 | 8 | UC-01's spec sentence "wrap steps 5-11 so any unexpected exception sets a failure state" is not implementable as written: the state machine has no failure edge out of `EXTRACTED` or `POLICIES_ATTACHED`, and it contradicts the same spec's requirement that a publish failure LEAVE the claim `POLICIES_ATTACHED`. Two explicit failure paths ship instead; an unexpected mid-pipeline exception rolls back to the committed `RECEIVED` claim | accepted, permanent |
 | 9 | Alembic runs in a subprocess from the API lifespan, because `migrations/env.py` calls `asyncio.run`, which cannot nest in the running loop. The project root is resolved from the working directory, not `__file__` | accepted, permanent |
@@ -150,18 +160,18 @@ Every deferral recorded in [`docs/plans/2026-09-06-phase-3-ingestion-path.md`](.
 | 12 | An entity straddling a `\n\n` chunk boundary is not redacted | accepted, permanent |
 | 13 | The presidio adapter test needs `en_core_web_lg` present locally (`make spacy-model`) | accepted, permanent |
 | 14 | `POST /v1/events/s3` treats an empty `eventName` as a creation event (fail-open) | accepted, permanent |
-| 15 | `FAKE_REDACTOR_NAMES` carries a bare "Whitfield" entry no fixture exercises standalone — an untested defensive branch in the fake's name list | Phase 6 |
-| 16 | The UC-01 ADR-001 assertion checks the final stored claim, not every `claims.save` argument as the UC-01 spec's test list asks | Phase 6 |
-| 17 | No test covers a duplicate whose original status is not `QUEUED`, nor one proving the duplicate check precedes the tenant lookup | Phase 6 |
-| 18 | No test covers `ObjectStorage.head()` against a missing bucket | Phase 6 |
-| 19 | The pdf-text-extractor spec's soft budget "5-page fixture extracts in <200 ms" has no test; no perf scaffolding exists in the repo | Phase 6 |
-| 20 | `tests/adapters/test_migrations.py` hardcodes revision `'0001_initial'` and creates "an unknown revision" rather than a genuine behind-head state; `get_current_revision()` returning `None` on an unstamped database is untested | Phase 6 |
-| 21 | A failure mid-`build_container` leaks the engine; `/readyz` with an empty probes map returns 200 | Phase 6 |
+| 15 | `FAKE_REDACTOR_NAMES` carries a bare "Whitfield" entry no fixture exercises standalone — an untested defensive branch in the fake's name list | Phase 7 |
+| 16 | The UC-01 ADR-001 assertion checks the final stored claim, not every `claims.save` argument as the UC-01 spec's test list asks | Phase 7 |
+| 17 | No test covers a duplicate whose original status is not `QUEUED`, nor one proving the duplicate check precedes the tenant lookup | Phase 7 |
+| 18 | No test covers `ObjectStorage.head()` against a missing bucket | Phase 7 |
+| 19 | The pdf-text-extractor spec's soft budget "5-page fixture extracts in <200 ms" has no test; no perf scaffolding exists in the repo | Phase 7 |
+| 20 | `tests/adapters/test_migrations.py` hardcodes revision `'0001_initial'` and creates "an unknown revision" rather than a genuine behind-head state; `get_current_revision()` returning `None` on an unstamped database is untested | Phase 7 |
+| 21 | A failure mid-`build_container` leaks the engine; `/readyz` with an empty probes map returns 200 | Phase 7 |
 | 22 | `POST /v1/claims/ingest` and `POST /v1/events/s3` validate the object key but never the bucket — both paths HEAD/GET whatever bucket the caller names, with nothing constraining it to `claims`. Not privilege escalation under v1's single global API key, but bucket scoping is convention-only; a `settings.s3_bucket` check is two lines | Phase 4 |
-| 23 | Two different tokens for one failure: UC-01 raises `ExtractionFailed("empty_text")` while the pypdf adapter raises `"no_text"` for the same condition, and `empty_text` is missing from the documented token list in `application/errors.py` | Phase 6 |
-| 24 | `failure_reason` for `NO_POLICIES` is the bare tenant slug (`str(NoPoliciesForTenant)`), so operators read `failure_reason: "tenant-a"` rather than a reason — breaking the short-token convention the same module sets for `EXTRACTION_FAILED` | Phase 6 |
+| 23 | Two different tokens for one failure: UC-01 raises `ExtractionFailed("empty_text")` while the pypdf adapter raises `"no_text"` for the same condition, and `empty_text` is missing from the documented token list in `application/errors.py` | Phase 7 |
+| 24 | `failure_reason` for `NO_POLICIES` is the bare tenant slug (`str(NoPoliciesForTenant)`), so operators read `failure_reason: "tenant-a"` rather than a reason — breaking the short-token convention the same module sets for `EXTRACTION_FAILED` | Phase 7 |
 | 25 | `RabbitMqEvaluationQueue.is_healthy` returns True during an aio-pika robust reconnect (`is_closed` stays False while it retries), so `/readyz` can report the queue healthy when publishes would fail — and the compose healthcheck gates `minio-setup` on `/readyz` | Phase 4 |
-| 26 | `handle_unmapped` logs no `claim_id`, while [api](04-interfaces/api.md) requires "Unhandled → 500, logged with `claim_id` if known"; the mapped handler does it, the catch-all does not | Phase 6 |
+| 26 | `handle_unmapped` logs no `claim_id`, while [api](04-interfaces/api.md) requires "Unhandled → 500, logged with `claim_id` if known"; the mapped handler does it, the catch-all does not | Phase 7 |
 
 ## Carried over from Phase 4
 
@@ -169,7 +179,7 @@ Every deferral recorded in [`docs/plans/2026-09-07-phase-4-evaluation-path.md`](
 
 | # | Deferred in Phase 4 | Closed by |
 |---|---------------------|-----------|
-| 1 | No metric is emitted anywhere on the worker path: `ecet_llm_calls_total`, `ecet_llm_latency_seconds`, `ecet_llm_tokens_total`, `ecet_triage_route_total`, `ecet_webhook_attempts_total` are all unimplemented, and the worker has no `/metrics` server and therefore still no container healthcheck | Phase 6 |
+| 1 | No metric is emitted anywhere on the worker path: `ecet_llm_calls_total`, `ecet_llm_latency_seconds`, `ecet_llm_tokens_total`, `ecet_triage_route_total`, `ecet_webhook_attempts_total` are all unimplemented, and the worker has no `/metrics` server and therefore still no container healthcheck | Phase 6 — closed |
 | 2 | `infrastructure/webhook/fake_client.py` and `infrastructure/queue/in_memory.py` from the layout spec are still not built; `tests/fakes.py` covers both | accepted, permanent |
 | 3 | UC-06 commits once, after routing: a webhook delivered but not committed is re-delivered on redelivery. At-least-once is the queue's contract, and the only key a receiver can dedupe on is `claim_id` **in the body** — `X-ECET-Delivery` is a fresh `uuid4()` per `deliver()` call (`httpx_client.py:65`), so a redelivered claim arrives under a different delivery id and that header is no idempotency key | accepted, permanent |
 | 4 | The adapter tests use `httpx.MockTransport` rather than `respx` | accepted, permanent |
@@ -179,8 +189,8 @@ Every deferral recorded in [`docs/plans/2026-09-07-phase-4-evaluation-path.md`](
 | 8 | A `NOTIFY_FAILED` claim has no retry path: `POST /v1/claims/{id}/retry-notify` is Phase 5 | Phase 5 |
 | 9 | The worker depends on a healthy api in compose so migrations have run, rather than waiting for head itself; a worker restarted alone against a behind-head database exits | accepted, deliberate |
 | 10 | Requeue has no delay: `RabbitMqConsumer._on_message` nacks with `requeue=True` for transient errors, which triggers immediate redelivery. With `x-delivery-limit: 5` and `max_retries=0` in the OpenAI gateway, a provider 429 burns the whole delivery budget in a fraction of a second and dead-letters the claim, with no recovery path until `ecet dlq-replay` exists | Phase 5 |
-| 11 | The LLM call and the webhook POST run inside the open unit of work: `EvaluateClaim.execute` opens the transaction, `_load` issues the first SELECT, and then `self._llm.evaluate` (up to `llm_timeout_s=60`) plus `RouteDecision` → `NotifyClient` → up to 3 HTTP attempts with a 1s+4s backoff all run before `uow.commit()`. That is a Postgres connection idle-in-transaction for up to ~65s per message, `worker_prefetch=4` of them per worker, against a default SQLAlchemy pool. Nothing records it today — no metric, no log, no pool-exhaustion alarm | Phase 6 |
-| 12 | Two untested paths in the consumer: `RabbitMqConsumer.is_healthy` (`rabbitmq.py:88-98`, the reconnect fix that closes Phase 3 carry-over #25 — all three of its conditions could be reverted and the suite stays green), and `stop()`'s in-flight drain (`rabbitmq.py:190-204`, the whole SIGTERM story in compose, yet every test calls `stop()` with `_in_flight == 0`) | Phase 6 |
+| 11 | The LLM call and the webhook POST run inside the open unit of work: `EvaluateClaim.execute` opens the transaction, `_load` issues the first SELECT, and then `self._llm.evaluate` (up to `llm_timeout_s=60`) plus `RouteDecision` → `NotifyClient` → up to 3 HTTP attempts with a 1s+4s backoff all run before `uow.commit()`. That is a Postgres connection idle-in-transaction for up to ~65s per message, `worker_prefetch=4` of them per worker, against a default SQLAlchemy pool. Nothing records it today — no metric, no log, no pool-exhaustion alarm | Phase 6 — closed |
+| 12 | Two untested paths in the consumer: `RabbitMqConsumer.is_healthy` (`rabbitmq.py:88-98`, the reconnect fix that closes Phase 3 carry-over #25 — all three of its conditions could be reverted and the suite stays green), and `stop()`'s in-flight drain (`rabbitmq.py:190-204`, the whole SIGTERM story in compose, yet every test calls `stop()` with `_in_flight == 0`) | Phase 7 |
 
 ## Carried over from Phase 5
 
@@ -188,17 +198,34 @@ Every deferral recorded in [`docs/plans/2026-09-15-phase-5-human-review-ops.md`]
 
 | # | Deferred in Phase 5 | Closed by |
 |---|---------------------|-----------|
-| 1 | No metric on the review or retry paths either (reviews resolved, webhook attempts from the api), and still no `/metrics` server | Phase 6 |
-| 2 | UC-09c's and `retry-notify`'s webhook POST runs inside the HTTP request and inside the open unit of work — one attempt (no in-request backoff, `retry-notify` is the retry) while a connection sits idle-in-transaction; the api-side twin of Phase 4 #11. Unlike the worker's prefetch-bounded concurrency, the api path is unbounded, and `/readyz`'s database probe shares the same pool, so the Phase 6 fix must move the POST out of the request, not just measure it | Phase 6 |
+| 1 | No metric on the review or retry paths either (reviews resolved, webhook attempts from the api), and still no `/metrics` server | Phase 6 — closed |
+| 2 | UC-09c's and `retry-notify`'s webhook POST runs inside the HTTP request and inside the open unit of work — one attempt (no in-request backoff, `retry-notify` is the retry) while a connection sits idle-in-transaction; the api-side twin of Phase 4 #11. Unlike the worker's prefetch-bounded concurrency, the api path is unbounded, and `/readyz`'s database probe shares the same pool, so the Phase 6 fix must move the POST out of the request, not just measure it | Phase 6 — closed |
 | 3 | Requeue still has no delay: a vendor 429 dead-letters a claim in milliseconds, and `ecet dlq-replay` is a manual recovery, not a retry policy | accepted for v1 — a delayed-retry queue is a topology change |
 | 4 | `GET /v1/claims/{id}` still omits the redacted text; `GET /v1/reviews` is the only response that carries it | accepted, deliberate |
 | 5 | A claim stuck `POLICIES_ATTACHED` is retried only when its object arrives again (MinIO's spooled re-send, or an operator re-posting `/v1/claims/ingest`); there is no sweeper, and `GET /v1/claims/{id}` does not show the object key an operator would re-post | accepted — the outbox stays out of v1 |
 | 6 | `ListOpenReviews` reads one claim per task (bounded by `limit` ≤ 200) | accepted unless the queue gets long |
 | 7 | `POST /v1/claims/{id}/retry-notify` takes the api key only, as the api spec lists it, so it is not tenant-scoped | accepted — v1 has one global key |
 | 8 | A re-publish racing an in-flight ingestion of the same object can publish twice; one save loses with `ConcurrentModification` and the worker skips the second message | accepted, permanent |
-| 9 | README: `/v1/reviews`, `retry-notify`, `make dlq-replay` | Phase 6 |
-| 10 | No E2E test of resolve → `decided_by=human`; `make demo` is the only end-to-end proof | Phase 6 |
+| 9 | README: `/v1/reviews`, `retry-notify`, `make dlq-replay` | Phase 7 |
+| 10 | No E2E test of resolve → `decided_by=human`; `make demo` is the only end-to-end proof | Phase 7 |
 | 11 | No live-vendor recording exists or is planned; the OpenAI-compatible adapter is verified against mock transports only | accepted, not scheduled — the user decided not to call a real vendor |
+
+## Carried over from Phase 6
+
+Every deviation recorded in [`docs/plans/2026-09-16-phase-6-observability.md`](../docs/plans/2026-09-16-phase-6-observability.md#deviations-from-spec-record-in-the-pr-description), with the phase that closes it.
+
+| # | Deferred in Phase 6 | Closed by |
+|---|---------------------|-----------|
+| 1 | The `observability` compose profile (Prometheus, Grafana, dashboard JSON) was not built — the endpoints are the deliverable, scraping them was the user's decision to leave for later, not scheduled | Phase 7 |
+| 2 | `ecet_db_pool_in_use` is an addition to the observability spec's metric table, not one of its rows | accepted, permanent |
+| 3 | The api and the worker each expose their own `prometheus_client` registry (process-global, one per process) — a scraper needs both targets, not one | accepted, permanent |
+| 4 | Two concurrent resolves of the same review can both POST the webhook before either commits; only one wins at `ClaimRepository.save`'s optimistic check in `task.resolve` — pre-existing in shape, not this phase's to solve | accepted, permanent |
+| 5 | A crash between the read unit of work and the write unit of work (UC-06, UC-09c, retry-notify) leaves the claim recoverable — it is still in a retryable status — but with a delivery already sent that the system has no record of | accepted, permanent — the transactional-outbox alternative stays out of v1 |
+| 6 | `configure_logging` re-runs its root-handler and uvicorn-logger reset on every call; harmless at one call per process, worth a look only if it is ever called from two places | accepted unless it becomes multi-call |
+| 7 | The worker's shutdown awaits an in-flight gauge refresh with no ceiling — a refresh against a hung database delays shutdown indefinitely; matches the codebase's existing no-DB-timeout posture, not a new gap this phase opened | accepted, permanent |
+| 8 | The `_tenant` helper is duplicated verbatim between `retry_notify.py` and `human_review.py` — deliberate, so the two use cases read alike; the only shared home would be `notify_client.py`, which knows nothing about a unit of work | accepted — revisit if a third caller appears |
+| 9 | `WEBHOOK_ATTEMPTS_TOTAL`'s `status_class` label can emit `1xx`/`3xx` for an unusual vendor response, outside the `{2xx, 4xx, 5xx, error}` vocabulary the spec names | accepted, permanent |
+| 10 | `LLM_LATENCY_SECONDS` observes `latency_ms / 1000`, losing sub-millisecond precision | accepted, permanent |
 
 ## Deferred (explicitly out of v1)
 - OCR for scanned PDFs.

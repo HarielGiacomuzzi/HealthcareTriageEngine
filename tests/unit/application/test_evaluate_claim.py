@@ -121,7 +121,18 @@ async def build_world(
 
 
 async def test_a_confident_evaluation_reaches_approved_auto() -> None:
-    case, uow, claim, llm, webhook = await build_world()
+    llm = FakeLLMGateway(
+        evaluation=Evaluation(
+            decision=Decision.MEETS_NECESSITY,
+            confidence=0.91,
+            matched_policy_id=POLICY_ID,
+            cited_codes=[Icd10Code(code="M54.5")],
+            rationale="Conservative therapy documented for six weeks.",
+            model="fake",
+            prompt_version="v1",
+        )
+    )
+    case, uow, claim, llm, webhook = await build_world(llm=llm)
 
     await case.execute(build_message(claim))
 
@@ -131,6 +142,13 @@ async def test_a_confident_evaluation_reaches_approved_auto() -> None:
     assert stored.evaluation.confidence == 0.91
     assert len(llm.requests) == 1
     assert len(webhook.deliveries) == 1
+    # The claim handed to `NotifyClient` must carry the evaluation the vendor just
+    # returned, not the stale, unevaluated uow #1 copy — a regression here ships an
+    # auto-approval to the tenant with a blank rationale and no policy reference.
+    payload = webhook.deliveries[0][1]
+    assert payload.rationale == "Conservative therapy documented for six weeks."
+    assert payload.matched_policy_id == POLICY_ID
+    assert payload.cited_codes == ["M54.5"]
     # Deviation 1: UC-06 owns the unit of work and commits *once*, so the evaluation,
     # the routing and the EVALUATED transition land in one transaction.
     assert uow.commits == 1
@@ -255,3 +273,74 @@ async def test_a_tenant_mismatch_between_message_and_claim_is_refused() -> None:
 
     assert llm.requests == []
     assert uow.claims.claims[claim.id].status is ClaimStatus.QUEUED
+
+
+async def test_the_vendor_is_called_with_no_transaction_open() -> None:
+    """Phase 4 carry-over #11: an `llm_timeout_s=60` call inside the unit of work is a
+    Postgres connection idle-in-transaction for a minute, `worker_prefetch` of them
+    per worker."""
+    claim = build_claim()
+    uow = FakeUnitOfWork(tenants=[build_tenant()], known_codes=CATALOGUE)
+    await uow.claims.add(claim)
+    llm = FakeLLMGateway(watch=uow)
+    webhook = FakeWebhookClient(watch=uow)
+    case = build_case(uow, llm, webhook)
+
+    await case.execute(build_message(claim))
+
+    assert llm.uow_open_during_call == [False]
+    assert webhook.uow_open_during_call == [False]
+
+
+async def test_the_claim_is_saved_from_the_second_unit_of_work() -> None:
+    case, uow, claim, _, _ = await build_world()
+
+    await case.execute(build_message(claim))
+
+    stored = uow.claims.claims[claim.id]
+    assert stored.status is ClaimStatus.APPROVED_AUTO
+    assert stored.evaluation is not None
+    assert stored.notification_attempts == 1
+    assert uow.entries == 2  # one read-only, one write
+
+
+async def test_a_claim_that_moved_on_while_the_vendor_was_answering_is_left_alone() -> None:
+    """The status check is repeated in the second unit of work: two workers can hold
+    the same message, and the one that finishes second must not overwrite the first.
+    The route was already decided and, here, already delivered by the time that check
+    fires — the webhook cannot be un-sent, so the test pins that down rather than
+    letting it pass unnoticed (see `evaluate.delivery_discarded`)."""
+    case, uow, claim, llm, webhook = await build_world()
+
+    async def advance_it(request: object) -> Evaluation:
+        stolen = await uow.claims.get(claim.id)
+        stolen.transition(ClaimStatus.EVALUATION_FAILED, reason="llm_permanent_error", now=NOW)
+        await uow.claims.save(stolen)
+        return llm.evaluation
+
+    llm.evaluate = advance_it  # type: ignore[method-assign]
+
+    await case.execute(build_message(claim))
+
+    assert uow.claims.claims[claim.id].status is ClaimStatus.EVALUATION_FAILED
+    assert len(webhook.deliveries) == 1  # the client was already notified before this fired
+
+
+async def test_a_deactivated_tenant_parks_the_claim_without_a_delivery() -> None:
+    """`_tenant` — the one genuinely new I/O-touching helper in the read/call/write
+    split — has no coverage otherwise: `RouteDecision.apply` no longer reads the
+    tenant itself, so this has to be driven from `EvaluateClaim` to exercise it."""
+    claim = build_claim()
+    inactive_tenant = build_tenant().model_copy(update={"active": False})
+    uow = FakeUnitOfWork(tenants=[inactive_tenant], known_codes=CATALOGUE)
+    await uow.claims.add(claim)
+    webhook = FakeWebhookClient()
+    case = build_case(uow, FakeLLMGateway(), webhook)
+
+    await case.execute(build_message(claim))
+
+    stored = uow.claims.claims[claim.id]
+    assert stored.status is ClaimStatus.NOTIFY_FAILED
+    assert stored.failure_reason == "tenant_inactive"
+    assert stored.notification_attempts == 0  # nothing left the process
+    assert webhook.deliveries == []

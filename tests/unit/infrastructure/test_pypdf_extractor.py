@@ -4,6 +4,7 @@ living under `tests/adapters/` where the whole directory is marked `slow`."""
 from pathlib import Path
 
 import pytest
+from prometheus_client import REGISTRY
 from scripts.make_fixtures import build_all
 
 from ecet.application.errors import ExtractionFailed
@@ -20,6 +21,10 @@ def pdfs() -> dict[str, Path]:
 
 def read(pdfs: dict[str, Path], name: str) -> bytes:
     return pdfs[name].read_bytes()
+
+
+def sample(name: str, **labels: str) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
 
 
 async def test_a_simple_note_extracts_its_text(pdfs: dict[str, Path]) -> None:
@@ -60,3 +65,11 @@ async def test_the_normaliser_collapses_runs_of_blank_lines() -> None:
     from ecet.infrastructure.pdf.pypdf_extractor import normalise
 
     assert normalise("a   \n\n\n\n\nb  \n") == "a\n\nb"
+
+
+async def test_extraction_is_timed(pdfs: dict[str, Path]) -> None:
+    before = sample("ecet_pdf_extract_seconds_count")
+
+    await PypdfTextExtractor(max_pages=50).extract(read(pdfs, "note_simple"))
+
+    assert sample("ecet_pdf_extract_seconds_count") == before + 1

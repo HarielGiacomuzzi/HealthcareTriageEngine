@@ -21,6 +21,7 @@ from ecet.domain.claim import Claim, ClaimStatus, RedactedText
 from ecet.domain.errors import (
     ClaimNotFound,
     ConcurrentModification,
+    ReviewAlreadyResolved,
     ReviewTaskNotFound,
     TenantNotFound,
 )
@@ -83,6 +84,12 @@ class FakeClaimRepository:
             :limit
         ]
 
+    async def count_by_status(self) -> dict[ClaimStatus, int]:
+        counts: dict[ClaimStatus, int] = {}
+        for claim in self.claims.values():
+            counts[claim.status] = counts.get(claim.status, 0) + 1
+        return counts
+
 
 class FakePolicyRepository:
     def __init__(self, policies: Iterable[Policy] = ()) -> None:
@@ -122,11 +129,17 @@ class FakeReviewTaskRepository:
         self.tasks: dict[UUID, ReviewTask] = {}
 
     async def add(self, task: ReviewTask) -> None:
-        self.tasks[task.id] = task
+        """A copy, like `get`: the caller's object and the stored one must not share
+        identity, or mutating the caller's copy in place would silently rewrite the
+        "stored" row without going through `save` and its OPEN guard."""
+        self.tasks[task.id] = task.model_copy()
 
     async def get(self, task_id: UUID) -> ReviewTask:
+        """A copy, not the stored reference: mirrors the real adapter building a fresh
+        domain object from the row on every read, so `resolve()` on the result cannot
+        silently mutate the store out from under a concurrent `save`."""
         try:
-            return self.tasks[task_id]
+            return self.tasks[task_id].model_copy()
         except KeyError:
             raise ReviewTaskNotFound(str(task_id)) from None
 
@@ -151,7 +164,24 @@ class FakeReviewTaskRepository:
         ][:limit]
 
     async def save(self, task: ReviewTask) -> None:
+        """Mirrors `PostgresReviewTaskRepository.save`: a `RESOLVED` save additionally
+        requires the stored task to still be `OPEN`, so the fake can catch the same
+        race the real adapter's `WHERE status = OPEN` guard catches — the winner's
+        commit landing between this request's `get` and its `save`."""
+        if task.status is ReviewStatus.RESOLVED:
+            stored = self.tasks.get(task.id)
+            if stored is None:
+                raise ReviewTaskNotFound(str(task.id))
+            if stored.status is not ReviewStatus.OPEN:
+                raise ReviewAlreadyResolved(str(task.id))
         self.tasks[task.id] = task
+
+    async def count_open_by_tenant(self) -> dict[TenantId, int]:
+        counts: dict[TenantId, int] = {}
+        for task in self.tasks.values():
+            if task.status is ReviewStatus.OPEN:
+                counts[task.tenant_id] = counts.get(task.tenant_id, 0) + 1
+        return counts
 
 
 class FakeIcd10CodeRepository:
@@ -179,8 +209,14 @@ class FakeUnitOfWork:
         self.review_tasks = FakeReviewTaskRepository()
         self.icd10_codes = FakeIcd10CodeRepository(known_codes)
         self.commits = 0
+        #: True between `__aenter__` and `__aexit__`. The external-call tests assert a
+        #: vendor call happens with this False.
+        self.active = False
+        self.entries = 0
 
     async def __aenter__(self) -> "FakeUnitOfWork":
+        self.active = True
+        self.entries += 1
         return self
 
     async def __aexit__(
@@ -189,6 +225,7 @@ class FakeUnitOfWork:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        self.active = False
         return None
 
     async def commit(self) -> None:
@@ -312,6 +349,7 @@ class FakeLLMGateway:
         *,
         evaluation: Evaluation | None = None,
         error: Exception | None = None,
+        watch: "FakeUnitOfWork | None" = None,
     ) -> None:
         self.evaluation = evaluation or Evaluation(
             decision=Decision.MEETS_NECESSITY,
@@ -322,8 +360,12 @@ class FakeLLMGateway:
         )
         self.error = error
         self.requests: list[EvaluationRequest] = []
+        self.watch = watch
+        self.uow_open_during_call: list[bool] = []
 
     async def evaluate(self, request: EvaluationRequest) -> Evaluation:
+        if self.watch is not None:
+            self.uow_open_during_call.append(self.watch.active)
         self.requests.append(request)
         if self.error is not None:
             raise self.error
@@ -364,11 +406,17 @@ class FakeWebhookClient:
     """Records `(tenant, payload)` per delivery. `error` makes every delivery fail,
     which is how the `NOTIFY_FAILED` branch is exercised."""
 
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self, *, error: Exception | None = None, watch: "FakeUnitOfWork | None" = None
+    ) -> None:
         self.deliveries: list[tuple[Tenant, ClientNotification]] = []
         self.error = error
+        self.watch = watch
+        self.uow_open_during_call: list[bool] = []
 
     async def deliver(self, tenant: Tenant, payload: ClientNotification) -> None:
+        if self.watch is not None:
+            self.uow_open_during_call.append(self.watch.active)
         if self.error is not None:
             raise self.error
         self.deliveries.append((tenant, payload))

@@ -11,6 +11,7 @@ import asyncio
 from typing import Any, cast
 
 import pytest
+import structlog
 from tests.pii import assert_no_pii
 from tests.unit.interfaces.test_worker_handler import build_message
 
@@ -70,3 +71,42 @@ async def test_an_ordinary_failure_is_still_nacked() -> None:
 
     assert delivery.settled == ["nack(requeue=False)"]
     assert_no_pii(delivery.body.decode("utf-8"))
+
+
+async def test_the_consumer_binds_the_message_context_for_the_handler() -> None:
+    """`request_id`/`message_id`, `claim_id`, `tenant_id` — the observability spec's
+    per-message bound context, so a worker line can be grepped by the same id the api
+    answered with."""
+    seen: dict[str, object] = {}
+
+    async def handle(message: EvaluationMessage) -> None:
+        seen.update(structlog.contextvars.get_contextvars())
+
+    consumer = build_consumer(handle)
+    message = build_message()
+    delivery = _Delivery(message.model_dump_json().encode("utf-8"))
+    delivery.headers = {"x-request-id": "req-1"}
+
+    await consumer._on_message(cast(Any, delivery))
+
+    assert seen["request_id"] == "req-1"
+    assert seen["claim_id"] == str(message.claim_id)
+    assert seen["tenant_id"] == str(message.tenant_id)
+    assert seen["message_id"] == str(message.message_id)
+    # Cleared afterwards: the next delivery is a different claim.
+    assert structlog.contextvars.get_contextvars() == {}
+
+
+async def test_a_delivery_without_a_request_id_binds_no_null() -> None:
+    """A message published outside an HTTP request (a dlq replay) has no id; a
+    `request_id: null` field in the logs would be worse than its absence."""
+    seen: dict[str, object] = {}
+
+    async def handle(message: EvaluationMessage) -> None:
+        seen.update(structlog.contextvars.get_contextvars())
+
+    delivery = _Delivery(build_message().model_dump_json().encode("utf-8"))
+
+    await build_consumer(handle)._on_message(cast(Any, delivery))
+
+    assert "request_id" not in seen

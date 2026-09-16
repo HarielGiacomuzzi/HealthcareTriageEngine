@@ -2,11 +2,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from prometheus_client import make_asgi_app
 
-from ecet import __version__
+from ecet import __version__, metrics  # noqa: F401 -- import registers the collectors
 from ecet.config import Settings
 from ecet.interfaces.api.container import ApiContainer, build_container
 from ecet.interfaces.api.errors import register_error_handlers
+from ecet.interfaces.api.middleware import bind_request_id
 from ecet.interfaces.api.routes import claims, events, health, reviews
 
 
@@ -30,6 +32,7 @@ def create_app(settings: Settings, container: ApiContainer | None = None) -> Fas
 
     app = FastAPI(title="ECET API", version=__version__, lifespan=lifespan)
     app.state.settings = settings
+    app.middleware("http")(bind_request_id)
     if container is not None:
         app.state.container = container
     register_error_handlers(app)
@@ -37,4 +40,7 @@ def create_app(settings: Settings, container: ApiContainer | None = None) -> Fas
     app.include_router(events.router)
     app.include_router(claims.router)
     app.include_router(reviews.router)
+    # Mounted rather than routed: `make_asgi_app` is a complete ASGI app, and mounting
+    # keeps the exposition format (and its content type) out of FastAPI's hands.
+    app.mount("/metrics", make_asgi_app())
     return app

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from prometheus_client import REGISTRY
 from tests.pii import assert_no_pii
 
 from ecet.application.errors import WebhookPermanentError, WebhookTransientError
@@ -21,6 +22,10 @@ from ecet.infrastructure.webhook.httpx_client import HttpxWebhookClient
 
 SECRET = "dev-hmac-tenant-a"
 NOW = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
+
+
+def sample(name: str, **labels: str) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
 
 
 def build_tenant() -> Tenant:
@@ -49,13 +54,14 @@ def build_payload() -> ClientNotification:
 
 
 def build_client(handler: Any, **overrides: Any) -> HttpxWebhookClient:
-    return HttpxWebhookClient(
-        timeout_s=5,
-        max_attempts=3,
-        backoff_seconds=(0.0, 0.0, 0.0),
-        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    args: dict[str, Any] = {
+        "timeout_s": 5,
+        "max_attempts": 3,
+        "backoff_seconds": (0.0, 0.0, 0.0),
+        "http_client": httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         **overrides,
-    )
+    }
+    return HttpxWebhookClient(**args)
 
 
 async def test_the_adapter_satisfies_the_port() -> None:
@@ -162,3 +168,27 @@ async def test_a_transport_error_is_retried_then_transient() -> None:
     assert attempts == 3
     for request in seen:
         assert_no_pii(request.content.decode("utf-8"))
+
+
+async def test_every_attempt_is_counted_by_response_class() -> None:
+    before_2xx = sample("ecet_webhook_attempts_total", status_class="2xx")
+    before_5xx = sample("ecet_webhook_attempts_total", status_class="5xx")
+    responses = iter([httpx.Response(500), httpx.Response(200)])
+
+    client = build_client(lambda request: next(responses), max_attempts=2, backoff_seconds=(0.0,))
+    await client.deliver(build_tenant(), build_payload())
+
+    assert sample("ecet_webhook_attempts_total", status_class="5xx") == before_5xx + 1
+    assert sample("ecet_webhook_attempts_total", status_class="2xx") == before_2xx + 1
+
+
+async def test_a_transport_failure_counts_as_error() -> None:
+    before = sample("ecet_webhook_attempts_total", status_class="error")
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    with pytest.raises(WebhookTransientError):
+        await build_client(refuse, max_attempts=1).deliver(build_tenant(), build_payload())
+
+    assert sample("ecet_webhook_attempts_total", status_class="error") == before + 1

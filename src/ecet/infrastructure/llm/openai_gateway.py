@@ -29,6 +29,7 @@ from openai import (
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import ValidationError
 
+from ecet import metrics
 from ecet.application.errors import LLMInvalidOutput, LLMPermanentError, LLMTransientError
 from ecet.application.ports.llm_gateway import EvaluationOutput, EvaluationRequest
 from ecet.application.prompts.evaluate_v1 import TOOL, TOOL_NAME, build_messages
@@ -37,6 +38,7 @@ from ecet.domain.evaluation import Evaluation
 log = structlog.get_logger(__name__)
 
 MAX_TOKENS = 1024
+PROVIDER = "openai"
 
 #: A retry would send the identical request and get the identical answer.
 PERMANENT_STATUS = frozenset({400, 401, 403, 404})
@@ -77,14 +79,21 @@ class OpenAiLlmGateway:
                 temperature=0,
             )
         except (APITimeoutError, APIConnectionError, RateLimitError, InternalServerError) as error:
+            self._count(outcome="transient")
             raise LLMTransientError(f"{type(error).__name__}: {error}") from error
         except APIStatusError as error:
             if error.status_code in PERMANENT_STATUS:
+                self._count(outcome="permanent")
                 raise LLMPermanentError(f"status {error.status_code}") from error
+            self._count(outcome="transient")
             raise LLMTransientError(f"status {error.status_code}") from error
         latency_ms = int((time.perf_counter() - started) * 1000)
 
-        output = _parse(completion)
+        try:
+            output = _parse(completion)
+        except LLMInvalidOutput:
+            self._count(outcome="invalid_output")
+            raise
         usage = completion.usage
         evaluation = output.to_evaluation(
             model=completion.model or self._model,
@@ -94,6 +103,12 @@ class OpenAiLlmGateway:
             output_tokens=usage.completion_tokens if usage else 0,
             known_policy_ids=[policy.id for policy in request.policies],
         )
+        self._count(outcome="ok")
+        metrics.LLM_LATENCY_SECONDS.labels(provider=PROVIDER, model=self._model).observe(
+            latency_ms / 1000
+        )
+        metrics.LLM_TOKENS_TOTAL.labels(direction="input").inc(evaluation.input_tokens)
+        metrics.LLM_TOKENS_TOTAL.labels(direction="output").inc(evaluation.output_tokens)
         log.info(
             "llm.evaluated",
             claim_id=str(request.claim_id),
@@ -106,6 +121,14 @@ class OpenAiLlmGateway:
             confidence=evaluation.confidence,
         )
         return evaluation
+
+    def _count(self, *, outcome: str) -> None:
+        """Always the configured model, not the vendor's `completion.model`: a pinned
+        snapshot name on the success path would split one deployment's `ok` and
+        `transient` outcomes across different label values, and an unbounded vendor
+        string is unbounded label cardinality on a metric meant to stay a small,
+        closed set."""
+        metrics.LLM_CALLS_TOTAL.labels(provider=PROVIDER, model=self._model, outcome=outcome).inc()
 
 
 def _parse(completion: Any) -> EvaluationOutput:

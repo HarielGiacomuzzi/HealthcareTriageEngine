@@ -20,12 +20,14 @@ operator re-posting `/v1/claims/ingest`: the duplicate check re-publishes a clai
 finds still `POLICIES_ATTACHED` instead of returning it untouched.
 """
 
+import time
 from collections.abc import Callable, Sequence
 from uuid import uuid4
 
 import structlog
 from pydantic import BaseModel, ConfigDict
 
+from ecet import metrics
 from ecet.application.errors import ExtractionFailed, ObjectNotFound
 from ecet.application.ports.clock import Clock
 from ecet.application.ports.object_storage import ObjectStorage
@@ -85,6 +87,17 @@ class IngestClaimDocument:
         self._max_pdf_bytes = max_pdf_bytes
 
     async def execute(self, command: IngestCommand) -> IngestResult:
+        started = time.perf_counter()
+        try:
+            result = await self._execute(command)
+        except BaseException:
+            metrics.INGEST_SECONDS.labels(outcome="failed").observe(time.perf_counter() - started)
+            raise
+        outcome = "duplicate" if result.duplicate else "ingested"
+        metrics.INGEST_SECONDS.labels(outcome=outcome).observe(time.perf_counter() - started)
+        return result
+
+    async def _execute(self, command: IngestCommand) -> IngestResult:
         # `SourceObject` validates the key layout and yields the tenant; both failures
         # happen before any I/O, so a malformed event costs one validation.
         source = SourceObject(
@@ -194,15 +207,18 @@ class IngestClaimDocument:
         return text
 
     def _advance(self, claim: Claim, status: ClaimStatus) -> None:
+        previous = claim.status
         claim.transition(status, now=self._clock.now())
         log.info(
             "claim.transition",
             claim_id=str(claim.id),
             tenant_id=str(claim.tenant_id),
             to=status.value,
+            **{"from": previous.value},
         )
 
     async def _fail(self, uow: UnitOfWork, claim: Claim, status: ClaimStatus, reason: str) -> None:
+        previous = claim.status
         claim.transition(status, reason=reason, now=self._clock.now())
         log.warning(
             "claim.failed",
@@ -210,6 +226,7 @@ class IngestClaimDocument:
             tenant_id=str(claim.tenant_id),
             to=status.value,
             reason=reason,
+            **{"from": previous.value},
         )
         await uow.claims.save(claim)
         await uow.commit()

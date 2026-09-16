@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import structlog
 
+from ecet import metrics
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.use_cases.evaluate_claim import EvaluateClaim
 from ecet.config import Settings
@@ -23,6 +24,7 @@ from ecet.infrastructure.postgres.unit_of_work import SqlAlchemyUnitOfWork
 from ecet.infrastructure.queue.rabbitmq import RabbitMqConsumer
 from ecet.infrastructure.webhook.httpx_client import HttpxWebhookClient
 from ecet.interfaces.worker.handler import WorkerMessageHandler, should_requeue
+from ecet.metrics import start_metrics_server
 
 log = structlog.get_logger(__name__)
 
@@ -30,6 +32,7 @@ log = structlog.get_logger(__name__)
 @dataclass
 class WorkerContainer:
     settings: Settings
+    uow_factory: Callable[[], UnitOfWork]
     evaluate: EvaluateClaim
     consumer: RabbitMqConsumer
     aclose: Callable[[], Awaitable[None]]
@@ -37,6 +40,12 @@ class WorkerContainer:
 
 async def build_container(settings: Settings) -> WorkerContainer:
     engine = create_engine(settings.database_url.get_secret_value())
+    # Started here rather than in `run()`: `run()` takes an injected container in tests,
+    # and a unit test must not bind a port.
+    start_metrics_server(settings.metrics_port)
+    metrics.DB_POOL_IN_USE.set_function(
+        engine.pool.checkedout  # type: ignore[attr-defined]  # QueuePool, the engine default
+    )
     await assert_at_head(engine)
     session_factory = create_session_factory(engine)
 
@@ -83,4 +92,10 @@ async def build_container(settings: Settings) -> WorkerContainer:
         threshold=settings.confidence_threshold,
         prefetch=settings.worker_prefetch,
     )
-    return WorkerContainer(settings=settings, evaluate=evaluate, consumer=consumer, aclose=aclose)
+    return WorkerContainer(
+        settings=settings,
+        uow_factory=uow_factory,
+        evaluate=evaluate,
+        consumer=consumer,
+        aclose=aclose,
+    )

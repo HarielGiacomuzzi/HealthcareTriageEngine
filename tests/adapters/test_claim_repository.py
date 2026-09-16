@@ -164,3 +164,21 @@ async def test_list_by_status_is_filtered_and_limited(
         assert len(await repository.list_by_status(ClaimStatus.QUEUED)) == 3
         assert len(await repository.list_by_status(ClaimStatus.QUEUED, limit=2)) == 2
         assert await repository.list_by_status(ClaimStatus.NO_POLICIES) == []
+
+
+async def test_count_by_status_groups_in_the_database(
+    session_factory: async_sessionmaker[AsyncSession], seeded_tenants: None
+) -> None:
+    queued = [build_claim(suffix=f"q{index}", status=ClaimStatus.QUEUED) for index in range(2)]
+    pending = build_claim(suffix="p0", status=ClaimStatus.REVIEW_PENDING)
+    async with session_factory() as session:
+        repository = PostgresClaimRepository(session)
+        for claim in [*queued, pending]:
+            await repository.add(claim)
+        await session.commit()
+
+    async with session_factory() as session:
+        counts = await PostgresClaimRepository(session).count_by_status()
+
+    assert counts[ClaimStatus.QUEUED] == 2
+    assert counts[ClaimStatus.REVIEW_PENDING] == 1

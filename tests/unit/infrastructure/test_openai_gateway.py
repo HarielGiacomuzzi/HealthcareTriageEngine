@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 import pytest
+from prometheus_client import REGISTRY
 from tests.fakes import build_evaluation_request
 from tests.pii import assert_no_pii
 
@@ -17,6 +18,11 @@ from ecet.application.errors import LLMInvalidOutput, LLMPermanentError, LLMTran
 from ecet.application.ports.llm_gateway import LLMGateway
 from ecet.domain.evaluation import Decision
 from ecet.infrastructure.llm.openai_gateway import OpenAiLlmGateway
+
+
+def sample(name: str, **labels: str) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
+
 
 ARGUMENTS = json.dumps(
     {
@@ -175,3 +181,57 @@ async def test_a_hallucinated_policy_id_is_discarded() -> None:
     )
 
     assert evaluation.matched_policy_id is None
+
+
+async def test_a_successful_call_counts_latency_and_tokens() -> None:
+    before_calls = sample(
+        "ecet_llm_calls_total", provider="openai", model="test-model", outcome="ok"
+    )
+    before_input = sample("ecet_llm_tokens_total", direction="input")
+    body = completion_body()
+    body["model"] = "test-model"
+
+    await build_gateway(responder(200, body), model="test-model").evaluate(
+        build_evaluation_request()
+    )
+
+    assert (
+        sample("ecet_llm_calls_total", provider="openai", model="test-model", outcome="ok")
+        == before_calls + 1
+    )
+    assert sample("ecet_llm_tokens_total", direction="input") > before_input
+    assert sample("ecet_llm_latency_seconds_count", provider="openai", model="test-model") >= 1
+
+
+async def test_a_rate_limit_counts_a_transient_outcome() -> None:
+    before = sample(
+        "ecet_llm_calls_total", provider="openai", model="test-model", outcome="transient"
+    )
+
+    with pytest.raises(LLMTransientError):
+        await build_gateway(responder(429), model="test-model").evaluate(build_evaluation_request())
+
+    assert (
+        sample("ecet_llm_calls_total", provider="openai", model="test-model", outcome="transient")
+        == before + 1
+    )
+
+
+async def test_an_unusable_body_counts_an_invalid_output() -> None:
+    before = sample(
+        "ecet_llm_calls_total", provider="openai", model="test-model", outcome="invalid_output"
+    )
+    body = completion_body(tool_calls=False)
+    body["model"] = "test-model"
+
+    with pytest.raises(LLMInvalidOutput):
+        await build_gateway(responder(200, body), model="test-model").evaluate(
+            build_evaluation_request()
+        )
+
+    assert (
+        sample(
+            "ecet_llm_calls_total", provider="openai", model="test-model", outcome="invalid_output"
+        )
+        == before + 1
+    )

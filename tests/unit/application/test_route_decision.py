@@ -1,40 +1,40 @@
 """UC-07. The confidence gate (ADR-003) and the two ways a decided claim can end:
-delivered, or waiting for a human."""
+delivered, or waiting for a human.
+
+`RouteDecision` is split in two — `decide` (pure) and `apply` (writes) — because the
+delivery between them runs outside any unit of work (UC-06). These tests exercise
+each half on its own terms: `decide` against an evaluation and a threshold, `apply`
+against a route and a `Delivery` the caller already obtained.
+"""
 
 from datetime import UTC, datetime
 from uuid import uuid4
 
-import pytest
-from tests.fakes import FakeUnitOfWork, FakeWebhookClient, FixedClock
+from prometheus_client import REGISTRY
+from tests.fakes import FakeUnitOfWork, FixedClock
 
-from ecet.application.errors import WebhookPermanentError, WebhookTransientError
+from ecet.application.use_cases.notify_client import Delivery, tenant_inactive
 from ecet.application.use_cases.route_decision import RouteDecision
 from ecet.domain.claim import Claim, ClaimStatus, RedactedText, SourceObject
+from ecet.domain.errors import TenantNotFound
 from ecet.domain.evaluation import (
     CheckOutcome,
     Decision,
     DeterministicResult,
     Evaluation,
     ReviewReason,
+    Route,
     Verdict,
 )
 from ecet.domain.ids import ClaimId, PolicyId
-from ecet.domain.tenant import Tenant
 
 NOW = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
 KEY = "tenants/tenant-a/claims/note-1.pdf"
 THRESHOLD = 0.85
 
 
-def build_tenant() -> Tenant:
-    return Tenant.model_validate(
-        {
-            "id": "tenant-a",
-            "name": "Northwind Health Plan",
-            "webhook_url": "http://mock-client:8081/hooks/northwind",
-            "webhook_secret": "dev-hmac-tenant-a",
-        }
-    )
+def sample(name: str, **labels: str) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
 
 
 def build_evaluation(
@@ -50,7 +50,7 @@ def build_evaluation(
     )
 
 
-def build_claim(*, confidence: float, verdict: Verdict = Verdict.PASS) -> Claim:
+def build_claim(*, verdict: Verdict = Verdict.PASS) -> Claim:
     return Claim(
         id=ClaimId(uuid4()),
         tenant_id="tenant-a",
@@ -61,86 +61,83 @@ def build_claim(*, confidence: float, verdict: Verdict = Verdict.PASS) -> Claim:
             verdict=verdict,
             checks=[CheckOutcome(name="icd10_present", passed=True, detail="1 code")],
         ),
-        evaluation=build_evaluation(confidence=confidence),
         created_at=NOW,
         updated_at=NOW,
     )
 
 
-async def build_case(
-    claim: Claim, webhook: FakeWebhookClient
-) -> tuple[RouteDecision, FakeUnitOfWork]:
-    uow = FakeUnitOfWork(tenants=[build_tenant()])
+def build_router() -> RouteDecision:
+    return RouteDecision(clock=FixedClock(NOW), threshold=THRESHOLD)
+
+
+async def build_uow(claim: Claim) -> FakeUnitOfWork:
+    uow = FakeUnitOfWork()
     await uow.claims.add(claim)
-    route = RouteDecision(uow=uow, webhook=webhook, clock=FixedClock(NOW), threshold=THRESHOLD)
-    return route, uow
+    return uow
 
 
-async def test_a_confident_decision_notifies_and_approves() -> None:
-    claim = build_claim(confidence=0.90)
-    webhook = FakeWebhookClient()
-    route, uow = await build_case(claim, webhook)
+def test_a_confident_decision_routes_to_auto_notify() -> None:
+    router = build_router()
 
-    await route.execute(claim)
+    route = router.decide(build_claim(), build_evaluation(confidence=0.90))
+
+    assert route is Route.AUTO_NOTIFY
+
+
+def test_the_threshold_boundary_is_inclusive() -> None:
+    router = build_router()
+
+    route = router.decide(build_claim(), build_evaluation(confidence=THRESHOLD))
+
+    assert route is Route.AUTO_NOTIFY
+
+
+def test_a_low_confidence_decision_routes_to_human_review() -> None:
+    router = build_router()
+
+    route = router.decide(build_claim(), build_evaluation(confidence=0.80))
+
+    assert route is Route.HUMAN_REVIEW
+
+
+def test_insufficient_evidence_never_auto_notifies_however_confident() -> None:
+    router = build_router()
+
+    route = router.decide(
+        build_claim(), build_evaluation(confidence=0.99, decision=Decision.INSUFFICIENT_EVIDENCE)
+    )
+
+    assert route is Route.HUMAN_REVIEW
+
+
+def test_the_route_is_counted() -> None:
+    before = sample("ecet_triage_route_total", route="AUTO_NOTIFY")
+    router = build_router()
+
+    router.decide(build_claim(), build_evaluation(confidence=0.90))
+
+    assert sample("ecet_triage_route_total", route="AUTO_NOTIFY") == before + 1
+
+
+async def test_a_successful_delivery_approves_the_claim() -> None:
+    claim = build_claim()
+    uow = await build_uow(claim)
+    delivery = Delivery(failure_reason=None, error=None)
+
+    await build_router().apply(uow, claim, route=Route.AUTO_NOTIFY, delivery=delivery)
 
     assert claim.status is ClaimStatus.APPROVED_AUTO
-    assert len(webhook.deliveries) == 1
     assert uow.review_tasks.tasks == {}
     assert uow.claims.saved == [claim.id]
 
 
-async def test_the_threshold_boundary_is_inclusive() -> None:
-    claim = build_claim(confidence=THRESHOLD)
-    webhook = FakeWebhookClient()
-    route, _ = await build_case(claim, webhook)
-
-    await route.execute(claim)
-
-    assert claim.status is ClaimStatus.APPROVED_AUTO
-
-
-async def test_a_low_confidence_decision_opens_a_review_and_does_not_notify() -> None:
-    claim = build_claim(confidence=0.80)
-    webhook = FakeWebhookClient()
-    route, uow = await build_case(claim, webhook)
-
-    await route.execute(claim)
-
-    assert claim.status is ClaimStatus.REVIEW_PENDING
-    assert webhook.deliveries == []
-    tasks = list(uow.review_tasks.tasks.values())
-    assert len(tasks) == 1
-    assert tasks[0].reason is ReviewReason.LOW_CONFIDENCE
-    assert tasks[0].claim_id == claim.id
-
-
-async def test_an_uncertain_deterministic_verdict_names_the_combined_reason() -> None:
-    claim = build_claim(confidence=0.80, verdict=Verdict.UNCERTAIN)
-    route, uow = await build_case(claim, FakeWebhookClient())
-
-    await route.execute(claim)
-
-    tasks = list(uow.review_tasks.tasks.values())
-    assert tasks[0].reason is ReviewReason.DETERMINISTIC_UNCERTAIN_LLM_LOW
-
-
-async def test_insufficient_evidence_never_auto_notifies_however_confident() -> None:
-    claim = build_claim(confidence=0.99)
-    claim.evaluation = build_evaluation(confidence=0.99, decision=Decision.INSUFFICIENT_EVIDENCE)
-    webhook = FakeWebhookClient()
-    route, _ = await build_case(claim, webhook)
-
-    await route.execute(claim)
-
-    assert claim.status is ClaimStatus.REVIEW_PENDING
-    assert webhook.deliveries == []
-
-
 async def test_a_permanent_delivery_failure_sets_notify_failed_with_a_token() -> None:
-    claim = build_claim(confidence=0.90)
-    route, uow = await build_case(claim, FakeWebhookClient(error=WebhookPermanentError("400")))
+    claim = build_claim()
+    uow = await build_uow(claim)
+    delivery = Delivery(failure_reason="webhook_rejected", error="WebhookPermanentError: 400")
+    delivery.apply_to(claim)  # what the caller (UC-06) does before `apply`
 
-    await route.execute(claim)
+    await build_router().apply(uow, claim, route=Route.AUTO_NOTIFY, delivery=delivery)
 
     assert claim.status is ClaimStatus.NOTIFY_FAILED
     assert claim.failure_reason == "webhook_rejected"
@@ -149,40 +146,53 @@ async def test_a_permanent_delivery_failure_sets_notify_failed_with_a_token() ->
     assert uow.claims.saved == [claim.id]
 
 
-async def test_a_tenant_deactivated_before_delivery_parks_the_claim() -> None:
-    # `NotifyClient` reads the tenant first, and the repository refuses an inactive one.
-    # With no catch here, that escapes UC-06, rolls the evaluation back and leaves the
-    # claim QUEUED with no failure_reason.
-    claim = build_claim(confidence=0.90)
-    uow = FakeUnitOfWork(tenants=[build_tenant().model_copy(update={"active": False})])
-    await uow.claims.add(claim)
-    route = RouteDecision(
-        uow=uow, webhook=FakeWebhookClient(), clock=FixedClock(NOW), threshold=THRESHOLD
+async def test_a_transient_delivery_failure_sets_notify_failed_with_its_own_token() -> None:
+    claim = build_claim()
+    uow = await build_uow(claim)
+    delivery = Delivery(
+        failure_reason="webhook_unreachable", error="WebhookTransientError: timeout"
     )
+    delivery.apply_to(claim)
 
-    await route.execute(claim)
+    await build_router().apply(uow, claim, route=Route.AUTO_NOTIFY, delivery=delivery)
+
+    assert claim.status is ClaimStatus.NOTIFY_FAILED
+    assert claim.failure_reason == "webhook_unreachable"
+    assert claim.last_notify_error is not None
+
+
+async def test_a_tenant_deactivated_before_delivery_parks_the_claim() -> None:
+    claim = build_claim()
+    uow = await build_uow(claim)
+    delivery = tenant_inactive(TenantNotFound("tenant-a"))
+    delivery.apply_to(claim)  # what the caller (UC-06) does before `apply`
+
+    await build_router().apply(uow, claim, route=Route.AUTO_NOTIFY, delivery=delivery)
 
     assert claim.status is ClaimStatus.NOTIFY_FAILED
     assert claim.failure_reason == "tenant_inactive"
     assert claim.last_notify_error is not None
-    assert uow.review_tasks.tasks == {}
-    assert uow.claims.saved == [claim.id]
+    assert claim.notification_attempts == 0  # nothing left the process
 
 
-async def test_a_transient_delivery_failure_sets_notify_failed_with_its_own_token() -> None:
-    claim = build_claim(confidence=0.90)
-    route, _ = await build_case(claim, FakeWebhookClient(error=WebhookTransientError("timeout")))
+async def test_a_low_confidence_route_opens_a_review_and_ignores_delivery() -> None:
+    claim = build_claim()
+    uow = await build_uow(claim)
 
-    await route.execute(claim)
+    await build_router().apply(uow, claim, route=Route.HUMAN_REVIEW, delivery=None)
 
-    assert claim.status is ClaimStatus.NOTIFY_FAILED
-    assert claim.failure_reason == "webhook_unreachable"
+    assert claim.status is ClaimStatus.REVIEW_PENDING
+    tasks = list(uow.review_tasks.tasks.values())
+    assert len(tasks) == 1
+    assert tasks[0].reason is ReviewReason.LOW_CONFIDENCE
+    assert tasks[0].claim_id == claim.id
 
 
-async def test_routing_a_claim_with_no_evaluation_is_a_programming_error() -> None:
-    claim = build_claim(confidence=0.90)
-    claim.evaluation = None
-    route, _ = await build_case(claim, FakeWebhookClient())
+async def test_an_uncertain_deterministic_verdict_names_the_combined_reason() -> None:
+    claim = build_claim(verdict=Verdict.UNCERTAIN)
+    uow = await build_uow(claim)
 
-    with pytest.raises(ValueError, match="no evaluation"):
-        await route.execute(claim)
+    await build_router().apply(uow, claim, route=Route.HUMAN_REVIEW, delivery=None)
+
+    tasks = list(uow.review_tasks.tasks.values())
+    assert tasks[0].reason is ReviewReason.DETERMINISTIC_UNCERTAIN_LLM_LOW
