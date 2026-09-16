@@ -247,6 +247,8 @@ Every deviation recorded in [`docs/plans/2026-09-16-phase-7-polish-e2e.md`](../d
 | 7 | `minio-setup` failed (exit 1) whenever it re-ran against an existing `miniodata` volume, because `mc event add` rejects an overlapping rule; it now skips the add when the rule exists | accepted, permanent |
 | 8 | The E2E review lists use `?limit=200`; on a long-lived stack that is never `make clean`ed, open tenant-a tasks can accumulate past that and a new task falls outside the page. CI always starts from empty volumes | accepted |
 | 9 | The fresh-clone quickstart (`uv sync && make demo`, image cached) measured 2 min 16 s, not under 2 minutes; the README states the measured time. Presidio's model load inside the api's start period dominates | accepted |
+| 10 | Tasks 11–13 were added after the PR opened: PR #8 had promised the ingest unit-of-work split and the `_tenant` extraction to Phase 7, but neither reached the roadmap's Phase 7 section | closed (Tasks 11–12) |
+| 11 | UC-01 re-reads the claim before each write, so a crash between the insert and the policy write leaves a `RECEIVED` claim with no error recorded — the same state an unexpected mid-pipeline exception left before | accepted, permanent (Phase 3 #8) |
 
 ## Deferred (explicitly out of v1)
 - OCR for scanned PDFs.

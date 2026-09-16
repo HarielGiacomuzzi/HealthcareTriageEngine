@@ -206,7 +206,9 @@ class IngestClaimDocument:
     async def _mark_queued(self, claim_id: ClaimId) -> ClaimStatus:
         """The write after a publish, in its own unit of work. A claim no longer
         `POLICIES_ATTACHED` was marked `QUEUED` by a concurrent re-publish of the same
-        object; it is left as it is."""
+        object; it is left as it is. Two re-publishes that both re-read `POLICIES_ATTACHED`
+        before either commits still collide at the optimistic save: the later one raises
+        `ConcurrentModification` (409), and its retry is a duplicate."""
         async with self._uow_factory() as uow:
             claim = await uow.claims.get(claim_id)
             if claim.status is ClaimStatus.POLICIES_ATTACHED:
