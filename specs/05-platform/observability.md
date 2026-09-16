@@ -26,4 +26,4 @@
 Out of scope v1. `request_id` propagated api → message header `x-request-id` → worker logs. Enough to grep one claim end-to-end.
 
 ## Optional compose profile `observability`
-Prometheus + Grafana with one dashboard JSON (ingest latency, LLM avoided %, route split). [Roadmap phase 6](../06-roadmap.md#phase-6--observability--polish); nice portfolio visual.
+Prometheus + Grafana with one dashboard JSON (ingest latency, LLM avoided %, route split, claims by status, open reviews). `make observability`; files under `deploy/observability/`. Shipped in [Phase 7](../06-roadmap.md#phase-7--polish--e2e).

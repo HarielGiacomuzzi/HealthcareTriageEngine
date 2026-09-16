@@ -18,6 +18,8 @@ Image target ≈ 1.5 GB (spaCy lg). Document; `en_core_web_md` swap via build ar
 | api           | build .  cmd `api`    | 8000         | postgres, rabbitmq   |
 | worker        | build .  cmd `worker` | 9100         | postgres, rabbitmq   |
 | mock-client   | build services/mock-client | 8081    | —                    |
+| prometheus    | prom/prometheus (profile `observability`) | 9090 | — |
+| grafana       | grafana/grafana (profile `observability`) | 3000 | — |
 
 Notes:
 - `minio-setup` depends on `api` healthy because webhook target registration is validated by MinIO at `mc event add`.
@@ -35,7 +37,7 @@ docker compose up --build -d
 curl localhost:8081/received | jq
 ```
 Second drop with [`tenant-empty`](../01-domain/tenant.md#4-seed) → 422 NO_POLICIES shown in api log.
-Third drop with note containing "unclear" → REVIEW_PENDING; resolve via [`POST /v1/reviews/{id}/resolve`](../04-interfaces/api.md#endpoints) ([UC-09c](../02-use-cases/UC-09-human-review.md#uc-09c-resolvereview)).
+Third drop with note containing "unclear" → REVIEW_PENDING; resolve via [`POST /v1/reviews/{id}/resolve`](../04-interfaces/api.md#endpoints) ([UC-09c](../02-use-cases/UC-09-human-review.md#uc-09c-resolvereview)). A fourth drop, note_excluded_code.pdf for tenant-a, is rejected by the deterministic checks (ADR-002) and opens a review without an LLM call.
 
 ## Resource limits (compose `deploy.resources`)
 api 2 GB RAM (presidio), worker 512 MB, others default.
