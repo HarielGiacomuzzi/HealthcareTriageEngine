@@ -2211,6 +2211,402 @@ git commit -m "docs(phase-7): record what shipped and close every carried-over r
 
 ---
 
+---
+
+## Addendum (PR #9 review): the two Phase 6 hand-overs
+
+PR #8 promised two items to Phase 7 that never reached the roadmap's Phase 7 section, so Tasks 1–10 did not include them. The maintainer asked for both on this PR (2026-09-16). The Global Constraints above apply unchanged.
+
+### Task 11: one `tenant_for_delivery` helper instead of three `_tenant` copies
+
+Closes the Phase 6 carry-over #8 ("revisit if a third caller appears" — `evaluate_claim.py` is the third).
+
+**Files:**
+- Modify: `src/ecet/application/use_cases/notify_client.py` (add `tenant_for_delivery`)
+- Modify: `src/ecet/application/use_cases/evaluate_claim.py`, `src/ecet/application/use_cases/human_review.py`, `src/ecet/application/use_cases/retry_notify.py` (delete each `_tenant` method, call the helper)
+- Test: `tests/unit/application/test_notify_client.py`
+
+**Interfaces:**
+- Consumes: `TenantRepository` (`ecet.domain.ports.tenant_repository`), `TenantNotFound`, `Tenant`, `TenantId`.
+- Produces: `async def tenant_for_delivery(tenants: TenantRepository, tenant_id: TenantId) -> Tenant | TenantNotFound` in `ecet.application.use_cases.notify_client`. It takes the repository, not a unit of work — which is what answers the Phase 6 objection that `notify_client.py` "knows nothing about a unit of work".
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/unit/application/test_notify_client.py` (add `tenant_for_delivery` to the existing `from ecet.application.use_cases.notify_client import (...)` block, `FakeTenantRepository` to the `tests.fakes` import, and `from ecet.domain.ids import TenantId` if `TenantId` is not already imported):
+
+```python
+async def test_tenant_for_delivery_returns_an_active_tenant() -> None:
+    tenant = build_tenant()
+    repository = FakeTenantRepository([tenant])
+
+    assert await tenant_for_delivery(repository, tenant.id) == tenant
+
+
+async def test_tenant_for_delivery_returns_rather_than_raises_for_an_inactive_tenant() -> None:
+    """A tenant deactivated since ingestion is a delivery that will never happen, not an
+    error: the caller parks the claim under `tenant_inactive`."""
+    repository = FakeTenantRepository([build_tenant(active=False)])
+
+    result = await tenant_for_delivery(repository, TenantId("tenant-a"))
+
+    assert isinstance(result, TenantNotFound)
+```
+
+Use the test module's existing tenant builder; if it is not named `build_tenant` or does not accept `active=`, construct the `Tenant` with `Tenant.model_validate({...})` the way the module already does, with `"active": False` for the second test.
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/unit/application/test_notify_client.py -k tenant_for_delivery -v`
+Expected: FAIL at collection with `ImportError: cannot import name 'tenant_for_delivery'`.
+
+- [ ] **Step 3: Implement and replace the three copies**
+
+In `src/ecet/application/use_cases/notify_client.py`, add the imports `from ecet.domain.ids import TenantId` and `from ecet.domain.ports.tenant_repository import TenantRepository`, and add after `tenant_inactive`:
+
+```python
+async def tenant_for_delivery(
+    tenants: TenantRepository, tenant_id: TenantId
+) -> Tenant | TenantNotFound:
+    """The tenant a delivery goes to, read while the caller's unit of work is still open
+    — the delivery itself happens after it closes. A tenant deactivated in the meantime
+    is not an error here: it is a delivery that will never happen, and the caller parks
+    the claim under `tenant_inactive`. Returned as one value rather than an
+    `(ok, error)` pair so the caller narrows with `isinstance` instead of an `assert`."""
+    try:
+        return await tenants.get(tenant_id)
+    except TenantNotFound as error:
+        return error
+```
+
+In each of `evaluate_claim.py`, `human_review.py` and `retry_notify.py`: delete the `async def _tenant(self, uow, claim)` method, replace the call `tenant_or_error = await self._tenant(uow, claim)` with `tenant_or_error = await tenant_for_delivery(uow.tenants, claim.tenant_id)`, add `tenant_for_delivery` to that module's import from `ecet.application.use_cases.notify_client` (add the import line if the module has none), and remove any import the deletion leaves unused (ruff reports it). In `evaluate_claim.py`, update the module docstring's sentence that names `_tenant` to name `tenant_for_delivery`.
+
+- [ ] **Step 4: Verify**
+
+Run: `uv run pytest tests/unit/application -v` → all PASS (the three use cases' existing `tenant_inactive` tests are the regression net).
+Run: `grep -rn "def _tenant\b\|self\._tenant(" src` → no output.
+
+- [ ] **Step 5: `make check` and commit**
+
+```bash
+make check
+export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+git add src/ecet/application/use_cases/notify_client.py src/ecet/application/use_cases/evaluate_claim.py src/ecet/application/use_cases/human_review.py src/ecet/application/use_cases/retry_notify.py tests/unit/application/test_notify_client.py
+git commit -m "refactor(notify): one tenant_for_delivery helper for the three delivering use cases"
+```
+
+---
+
+### Task 12: UC-01 — no connection held across the object read, extraction, redaction or publish
+
+Closes the ingestion-side twin of Phase 4 #11 / Phase 5 #2 that PR #8 handed to Phase 7: `IngestClaimDocument` holds one unit of work open across the MinIO GET, pypdf, spaCy redaction and the AMQP publish.
+
+**Files:**
+- Modify: `src/ecet/application/use_cases/ingest_claim_document.py`
+- Modify: `specs/02-use-cases/UC-01-ingest-claim-document.md`
+- Test: `tests/unit/application/test_ingest_claim_document.py`
+
+**Interfaces:**
+- Consumes: unchanged constructor and `execute(IngestCommand) -> IngestResult`. `FakeUnitOfWork.active` (True only between `__aenter__` and `__aexit__`); the harness's `uow_factory=lambda: self.uow` hands out the same `FakeUnitOfWork` on every call, which is reusable. UC-06's `ClaimNotYetQueued` requeue (Task 7) still covers the publish-before-`QUEUED`-commit window, which this task keeps.
+- Produces: the same persisted outcomes and commit counts as today (happy path 3, deterministic reject 2, publish failure 2), reached through "read → external work with no connection → write":
+  1. **Unit of work 1:** duplicate check (and, for a `POLICIES_ATTACHED` duplicate, read its policies), tenant check, `add` the `RECEIVED` claim, commit. Close.
+  2. **No connection:** object GET, extraction, redaction. An `ExtractionFailed` opens a short unit of work that re-reads the claim, persists `EXTRACTION_FAILED` and commits.
+  3. **Unit of work 2:** re-read the claim, advance `EXTRACTED` → `REDACTED`, attach policies (`NO_POLICIES` is persisted here), `POLICIES_ATTACHED`, run the checks; a `REJECT` opens the review and advances `REVIEW_PENDING`. Save, commit. Close.
+  4. **No connection:** publish (skipped for `REVIEW_PENDING`).
+  5. **Unit of work 3:** re-read the claim; advance to `QUEUED` only if it is still `POLICIES_ATTACHED` (a concurrent re-publish of the same object may have got there first — that is not an error). Save, commit.
+  The duplicate re-publish follows 4 → 5 with the policies read in step 1.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/unit/application/test_ingest_claim_document.py`:
+
+```python
+def spy_on_unit_of_work(harness: Harness, target: object, method: str) -> list[bool]:
+    """Wrap `target.method` so each call records whether the unit of work was open.
+    An instance attribute shadows the class method, so the fake itself is unchanged."""
+    open_during_call: list[bool] = []
+    original = getattr(target, method)
+
+    async def recording(*args: Any, **kwargs: Any) -> Any:
+        open_during_call.append(harness.uow.active)
+        return await original(*args, **kwargs)
+
+    setattr(target, method, recording)
+    return open_during_call
+
+
+async def test_no_external_call_runs_inside_a_unit_of_work() -> None:
+    """The object read, pypdf, spaCy and the broker can each take seconds; none of them
+    may hold a pooled connection while they do (the Phase 6 fix, on the ingest side)."""
+    harness = Harness()
+    calls = {
+        "get_bytes": spy_on_unit_of_work(harness, harness.storage, "get_bytes"),
+        "extract": spy_on_unit_of_work(harness, harness.extractor, "extract"),
+        "redact": spy_on_unit_of_work(harness, harness.redactor, "redact"),
+        "publish": spy_on_unit_of_work(harness, harness.queue, "publish"),
+    }
+
+    result = await harness.ingest()
+
+    assert result.status is ClaimStatus.QUEUED
+    assert calls == {name: [False] for name in calls}
+
+
+async def test_a_re_publish_runs_outside_the_unit_of_work_too() -> None:
+    harness = Harness(queue=FakeEvaluationQueue(error=QueuePublishError("no confirm")))
+    with pytest.raises(QueuePublishError):
+        await harness.ingest()
+    harness.queue.error = None
+    publish_calls = spy_on_unit_of_work(harness, harness.queue, "publish")
+
+    result = await harness.ingest()
+
+    assert result.status is ClaimStatus.QUEUED
+    assert publish_calls == [False]
+
+
+async def test_a_claim_queued_by_a_concurrent_re_publish_is_not_an_error() -> None:
+    """Between UC-01's `POLICIES_ATTACHED` commit and its `QUEUED` write, the same object
+    arriving again can re-publish and mark the claim `QUEUED` first. The late writer
+    finds it already `QUEUED` and leaves it, instead of raising `InvalidTransition`."""
+    harness = Harness()
+
+    async def racing_publish(message: Any) -> None:
+        harness.queue.published.append(message)
+        stored = harness.uow.claims.claims[message.claim_id]
+        stored.transition(ClaimStatus.QUEUED, now=NOW)
+
+    harness.queue.publish = racing_publish  # type: ignore[method-assign]
+
+    result = await harness.ingest()
+
+    assert result.status is ClaimStatus.QUEUED
+    assert harness.uow.claims.claims[result.claim_id].status is ClaimStatus.QUEUED
+```
+
+In `Harness.__init__`, keep the redactor on the harness so the spy can reach it: replace `redact_pii=RedactPii(FakePiiRedactor()),` with
+
+```python
+            redact_pii=RedactPii(self.redactor),
+```
+
+and add `self.redactor = FakePiiRedactor()` just above `self.use_case = IngestClaimDocument(`.
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/unit/application/test_ingest_claim_document.py -k "unit_of_work or concurrent_re_publish" -v`
+Expected: FAIL — `test_no_external_call_runs_inside_a_unit_of_work` with `[True]` for all four; `test_a_re_publish_runs_outside_the_unit_of_work_too` with `[True] == [False]`; `test_a_claim_queued_by_a_concurrent_re_publish_is_not_an_error` with `InvalidTransition` (QUEUED → QUEUED).
+
+- [ ] **Step 3: Implement**
+
+In `src/ecet/application/use_cases/ingest_claim_document.py`, replace the module docstring's second and third paragraphs and everything from `async def _execute` down to (not including) `async def _read_text` with the following. Keep `_read_text`, `_advance` and `_fail` exactly as they are.
+
+Module docstring — replace the "**Auditability.**" paragraph and the "The publish (step 10)…" paragraph with:
+
+```python
+**Auditability.** The claim row is inserted and committed before any of the fallible
+steps run, so a failure leaves a claim to look at rather than nothing at all. The two
+recoverable failure states the state machine allows from that point —
+`EXTRACTION_FAILED` and `NO_POLICIES` — are persisted and committed on their own path
+before the error is re-raised.
+
+**No connection across slow work.** The object read, pypdf, spaCy and the publish each
+run with no unit of work open: read and insert, close; fetch, extract and redact;
+re-read, attach policies, check and save, close; publish; re-read and mark `QUEUED`.
+Each write re-reads the claim, because `ClaimRepository.save` refuses a claim this unit
+of work did not load.
+
+The publish happens *after* the `POLICIES_ATTACHED` commit. A publish that fails
+therefore leaves a durable `POLICIES_ATTACHED` claim that a retry can re-send; the
+transactional outbox that would make this atomic is deferred out of v1. The retry is
+the same object arriving again — MinIO re-sending the event it got a 503 for, or an
+operator re-posting `/v1/claims/ingest`: the duplicate check re-publishes a claim it
+finds still `POLICIES_ATTACHED` instead of returning it untouched. A worker that reads
+the claim before the `QUEUED` write lands requeues the message (UC-06,
+`ClaimNotYetQueued`).
+```
+
+The methods:
+
+```python
+    async def _execute(self, command: IngestCommand) -> IngestResult:
+        # `SourceObject` validates the key layout and yields the tenant; both failures
+        # happen before any I/O, so a malformed event costs one validation.
+        source = SourceObject(
+            bucket=command.bucket, key=command.key, etag=command.etag, size=command.size
+        )
+        source.ensure_size_within(self._max_pdf_bytes)
+        tenant_id = source.tenant_id()
+
+        republish: Sequence[Policy] | None = None
+        async with self._uow_factory() as uow:
+            duplicate = await uow.claims.find_by_source(source.bucket, source.key, source.etag)
+            if duplicate is not None:
+                if duplicate.status is ClaimStatus.POLICIES_ATTACHED:
+                    # Against the policy versions attached the first time, not whatever
+                    # is active today.
+                    republish = await uow.policies.get_many(duplicate.policy_ids)
+            else:
+                await uow.tenants.get(tenant_id)  # raises TenantNotFound; no claim is created
+                now = self._clock.now()
+                claim = Claim(
+                    id=ClaimId(uuid4()),
+                    tenant_id=tenant_id,
+                    source=source,
+                    created_at=now,
+                    updated_at=now,
+                )
+                await uow.claims.add(claim)
+                await uow.commit()
+
+        if duplicate is None:
+            return await self._run_pipeline(claim)
+
+        status = duplicate.status
+        if republish is not None:
+            # The retry for a failed publish: the claim already holds the redacted text,
+            # the deterministic result and its policy ids, so only the publish repeats.
+            # Raises `QueuePublishError` again if the broker is still refusing, leaving
+            # the claim exactly as it was.
+            await self._enqueue.execute(duplicate, republish)
+            status = await self._mark_queued(duplicate.id)
+        # ADR-006: same object, same content — nothing else to redo.
+        log.info(
+            "claim.duplicate",
+            claim_id=str(duplicate.id),
+            tenant_id=str(tenant_id),
+            status=status.value,
+        )
+        return IngestResult(claim_id=duplicate.id, status=status, duplicate=True)
+
+    async def _run_pipeline(self, received: Claim) -> IngestResult:
+        try:
+            text = await self._read_text(received.source)
+        except ExtractionFailed as error:
+            async with self._uow_factory() as uow:
+                claim = await uow.claims.get(received.id)
+                await self._fail(uow, claim, ClaimStatus.EXTRACTION_FAILED, str(error))
+            raise
+
+        redacted = await self._redact_pii.execute(text)
+        del text  # ADR-001: the raw note stops existing here.
+
+        async with self._uow_factory() as uow:
+            claim = await uow.claims.get(received.id)
+            self._advance(claim, ClaimStatus.EXTRACTED)
+            claim.redacted = redacted
+            self._advance(claim, ClaimStatus.REDACTED)
+
+            # Both depend on repositories owned by this unit of work, so they are built
+            # here rather than injected.
+            attach_policies = AttachTenantPolicies(uow.policies, self._clock)
+            try:
+                policies: Sequence[Policy] = await attach_policies.execute(claim.tenant_id)
+            except NoPoliciesForTenant:
+                await self._fail(uow, claim, ClaimStatus.NO_POLICIES, "no_policies")
+                raise
+            claim.policy_ids = [policy.id for policy in policies]
+            self._advance(claim, ClaimStatus.POLICIES_ATTACHED)
+
+            deterministic = await self._run_checks.execute(redacted, policies)
+            claim.deterministic = deterministic
+            if deterministic.verdict is Verdict.REJECT:
+                # ADR-002's saving: a human looks at it, the LLM is never called.
+                request_review = RequestHumanReview(uow.review_tasks, self._clock)
+                await request_review.execute(claim, ReviewReason.DETERMINISTIC_REJECT)
+                self._advance(claim, ClaimStatus.REVIEW_PENDING)
+
+            # Commit before publishing: a publish failure must leave a durable
+            # POLICIES_ATTACHED claim, not a rolled-back one.
+            await uow.claims.save(claim)
+            await uow.commit()
+
+        if claim.status is ClaimStatus.REVIEW_PENDING:
+            return IngestResult(claim_id=claim.id, status=claim.status)
+
+        await self._enqueue.execute(claim, policies)
+        return IngestResult(claim_id=claim.id, status=await self._mark_queued(claim.id))
+
+    async def _mark_queued(self, claim_id: ClaimId) -> ClaimStatus:
+        """The write after a publish, in its own unit of work. A claim no longer
+        `POLICIES_ATTACHED` was marked `QUEUED` by a concurrent re-publish of the same
+        object; it is left as it is."""
+        async with self._uow_factory() as uow:
+            claim = await uow.claims.get(claim_id)
+            if claim.status is ClaimStatus.POLICIES_ATTACHED:
+                self._advance(claim, ClaimStatus.QUEUED)
+                await uow.claims.save(claim)
+                await uow.commit()
+            return claim.status
+```
+
+Delete the old `_republish` method. `mypy --strict` must accept `claim` being bound only on the `duplicate is None` branch; if it reports "possibly unbound", initialise `claim: Claim | None = None` before the `async with` and pass `claim` after an `assert`-free narrowing (`if duplicate is None and claim is not None:`), and record the choice in the report.
+
+In `specs/02-use-cases/UC-01-ingest-claim-document.md`, directly after the "Publish (step 10) happens **after** DB commit…" paragraph, add:
+
+```markdown
+No unit of work is open across the object read, the extraction, the redaction or the publish: UC-01 inserts and commits the `RECEIVED` claim, does that work with no connection held, re-reads the claim to attach policies, run the checks and commit, publishes, then re-reads it once more to mark it `QUEUED` — only if it is still `POLICIES_ATTACHED`, since a concurrent re-publish of the same object may already have done so.
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `uv run pytest tests/unit/application/test_ingest_claim_document.py tests/api -v` → all PASS, including the unchanged commit-count assertions (3 / 2 / 2) and the Task 2 write and duplicate tests.
+
+Run: `uv run pytest -m slow tests/adapters/test_unit_of_work.py -v` (Docker running) → PASS.
+
+Then the E2E suite against the running stack, which rebuilds the api image with this source change:
+
+```bash
+make e2e
+```
+
+Expected: 7 passed. The worker's `claim.not_yet_queued` requeue may appear in the logs; that is Task 7's fix working, not a failure.
+
+- [ ] **Step 5: `make check` and commit**
+
+```bash
+make check
+export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+git add src/ecet/application/use_cases/ingest_claim_document.py specs/02-use-cases/UC-01-ingest-claim-document.md tests/unit/application/test_ingest_claim_document.py
+git commit -m "perf(ingest): hold no connection across the object read, extraction, redaction or publish"
+```
+
+---
+
+### Task 13: record the addendum
+
+**Files:**
+- Modify: `specs/06-roadmap.md`
+- Modify: `docs/plans/2026-09-16-phase-7-polish-e2e.md` (Deviations section only)
+
+- [ ] **Step 1: Roadmap**
+
+In the `## Phase 7 — Polish & E2E` section, add two bullets before the "Deviations from the plan" bullet:
+
+```markdown
+- `IngestClaimDocument` (UC-01) holds no unit of work across the object read, pypdf, spaCy or the publish — read and insert, work with no connection, re-read and write — the ingestion-side twin of Phase 6's external-call move, handed over in PR #8.
+- One `tenant_for_delivery(tenants, tenant_id)` in `notify_client.py` replaces the three `_tenant` copies in UC-06, UC-09c and `retry-notify` (Phase 6 carry-over #8's third caller).
+```
+
+In the "Carried over from Phase 6" table, change row #8's last cell to `Phase 7 — closed (third caller in UC-06; extracted as \`tenant_for_delivery\`)`.
+
+- [ ] **Step 2: Deviations**
+
+Append to this plan's Deviations section:
+
+```markdown
+- Tasks 11–13 were added after the PR opened: PR #8 had promised the ingest unit-of-work split and the `_tenant` extraction to Phase 7, but neither reached the roadmap's Phase 7 section, so the original plan missed them. Closed by: Tasks 11–12.
+- UC-01 now re-reads the claim before each write, so a crash between the insert and the policy write leaves a `RECEIVED` claim with no error recorded — the same state an unexpected mid-pipeline exception left before. Closed by: n/a, accepted (Phase 3 #8).
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+git add specs/06-roadmap.md docs/plans/2026-09-16-phase-7-polish-e2e.md
+git commit -m "docs(phase-7): record the ingest unit-of-work split and the tenant helper"
+```
+
+
 ## Phase exit criteria
 
 1. `make check` green.
