@@ -25,9 +25,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from ecet.application.ports.clock import Clock
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.ports.webhook_client import WebhookClient
-from ecet.application.use_cases.notify_client import NotifyClient
+from ecet.application.use_cases.notify_client import NotifyClient, tenant_inactive
 from ecet.domain.claim import Claim, ClaimStatus
-from ecet.domain.errors import InvalidTransition, ReviewTaskNotFound
+from ecet.domain.errors import InvalidTransition, ReviewTaskNotFound, TenantNotFound
 from ecet.domain.evaluation import (
     DeterministicResult,
     Evaluation,
@@ -165,13 +165,19 @@ class ResolveReview:
                 )
             await uow.review_tasks.save(task)
 
-            reason = await NotifyClient(uow.tenants, self._webhook, self._clock).attempt(
-                claim, outcome=command.resolution, confidence=1.0, decided_by="human"
-            )
-            if reason is None:
+            try:
+                tenant = await uow.tenants.get(claim.tenant_id)
+            except TenantNotFound as error:
+                delivery = tenant_inactive(error)
+            else:
+                delivery = await NotifyClient(self._webhook, self._clock).attempt(
+                    claim, tenant, outcome=command.resolution, confidence=1.0, decided_by="human"
+                )
+            delivery.apply_to(claim)
+            if delivery.succeeded:
                 claim.transition(ClaimStatus.REVIEW_RESOLVED, now=now)
             else:
-                claim.transition(ClaimStatus.NOTIFY_FAILED, reason=reason, now=now)
+                claim.transition(ClaimStatus.NOTIFY_FAILED, reason=delivery.failure_reason, now=now)
             await uow.claims.save(claim)
             await uow.commit()
 

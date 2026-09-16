@@ -2,10 +2,13 @@
 
 One `execute` is one delivery attempt from the claim's point of view — the adapter's
 internal retries are invisible here, so `notification_attempts` counts the times the
-system tried to tell the client, not the number of HTTP requests. The claim is
-mutated but not saved: the caller (UC-07, UC-09c, or the operator retry) owns the unit of
-work and decides what the failure means for the claim's status.
+system tried to tell the client, not the number of HTTP requests. `execute` does not
+mutate the claim: the caller (UC-07, UC-09c, or the operator retry) owns the unit of
+work, reads the tenant itself, and applies the resulting `Delivery` to whichever claim
+it ends up saving.
 """
+
+from dataclasses import dataclass
 
 import structlog
 
@@ -16,7 +19,7 @@ from ecet.application.ports.webhook_client import WebhookClient
 from ecet.domain.claim import Claim
 from ecet.domain.errors import TenantNotFound
 from ecet.domain.evaluation import Decision
-from ecet.domain.ports.tenant_repository import TenantRepository
+from ecet.domain.tenant import Tenant
 
 log = structlog.get_logger(__name__)
 
@@ -27,21 +30,47 @@ UNREACHABLE = "webhook_unreachable"
 TENANT_INACTIVE = "tenant_inactive"
 
 
+@dataclass(frozen=True)
+class Delivery:
+    """What one attempt did, as a value.
+
+    The claim is not mutated here: the caller delivers *outside* its unit of work and
+    then saves a claim it re-read inside a second one, so the fields have to be
+    applied to that object, not to the one the payload was built from.
+    """
+
+    failure_reason: str | None
+    error: str | None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.failure_reason is None
+
+    def apply_to(self, claim: Claim) -> None:
+        claim.notification_attempts += 1
+        claim.last_notify_error = self.error
+
+
+def tenant_inactive(error: TenantNotFound) -> Delivery:
+    """A tenant deactivated since the claim was ingested. Nothing was sent, and the
+    claim parks under the same token as any other undelivered decision."""
+    return Delivery(failure_reason=TENANT_INACTIVE, error=f"{type(error).__name__}: {error}")
+
+
 class NotifyClient:
-    def __init__(self, tenants: TenantRepository, webhook: WebhookClient, clock: Clock) -> None:
-        self._tenants = tenants
+    def __init__(self, webhook: WebhookClient, clock: Clock) -> None:
         self._webhook = webhook
         self._clock = clock
 
     async def execute(
         self,
         claim: Claim,
+        tenant: Tenant,
         *,
         outcome: Decision,
         confidence: float,
         decided_by: DecidedBy,
     ) -> ClientNotification:
-        tenant = await self._tenants.get(claim.tenant_id)
         evaluation = claim.evaluation
         payload = ClientNotification(
             claim_id=claim.id,
@@ -57,57 +86,47 @@ class NotifyClient:
             evidence_missing=list(evaluation.evidence_missing) if evaluation else [],
             decided_at=self._clock.now(),
         )
-
-        claim.notification_attempts += 1
-        try:
-            await self._webhook.deliver(tenant, payload)
-        except WebhookError as error:
-            # The detail goes on the claim for an operator to read; `failure_reason`
-            # stays a short token, set by the caller.
-            claim.last_notify_error = f"{type(error).__name__}: {error}"
-            log.warning(
-                "notify.failed",
-                claim_id=str(claim.id),
-                tenant_id=str(claim.tenant_id),
-                attempts=claim.notification_attempts,
-                error=type(error).__name__,
-            )
-            raise
-        claim.last_notify_error = None
+        await self._webhook.deliver(tenant, payload)
         log.info(
             "notify.delivered",
             claim_id=str(claim.id),
             tenant_id=str(claim.tenant_id),
             outcome=payload.outcome,
             decided_by=decided_by,
-            attempts=claim.notification_attempts,
         )
         return payload
 
     async def attempt(
         self,
         claim: Claim,
+        tenant: Tenant,
         *,
         outcome: Decision,
         confidence: float,
         decided_by: DecidedBy,
-    ) -> str | None:
-        """`execute` for a caller that parks the claim instead of propagating: `None`
-        when the webhook was delivered, otherwise the `failure_reason` token to park it
-        under. UC-07, UC-09c and the operator retry all park a failed delivery the same
-        way, so the mapping lives here once."""
+    ) -> Delivery:
+        """`execute` for a caller that parks the claim instead of propagating. UC-07,
+        UC-09c and the operator retry all park a failed delivery the same way, so the
+        mapping lives here once."""
         try:
-            await self.execute(claim, outcome=outcome, confidence=confidence, decided_by=decided_by)
-        except TenantNotFound as error:
-            # The tenant is read before any delivery is attempted, and the repository
-            # refuses one deactivated since the claim was ingested.
-            claim.last_notify_error = f"{type(error).__name__}: {error}"
-            return TENANT_INACTIVE
-        except WebhookPermanentError:
-            return REJECTED
-        except WebhookError:
-            return UNREACHABLE
-        return None
+            await self.execute(
+                claim, tenant, outcome=outcome, confidence=confidence, decided_by=decided_by
+            )
+        except WebhookPermanentError as error:
+            return self._failed(claim, REJECTED, error)
+        except WebhookError as error:
+            return self._failed(claim, UNREACHABLE, error)
+        return Delivery(failure_reason=None, error=None)
+
+    @staticmethod
+    def _failed(claim: Claim, reason: str, error: Exception) -> Delivery:
+        log.warning(
+            "notify.failed",
+            claim_id=str(claim.id),
+            tenant_id=str(claim.tenant_id),
+            error=type(error).__name__,
+        )
+        return Delivery(failure_reason=reason, error=f"{type(error).__name__}: {error}")
 
 
 def cast_outcome(decision: Decision) -> Outcome:

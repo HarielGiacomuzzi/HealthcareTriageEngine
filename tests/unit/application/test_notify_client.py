@@ -6,13 +6,20 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from tests.fakes import FakeTenantRepository, FakeWebhookClient, FixedClock
+from tests.fakes import FakeWebhookClient, FixedClock
 from tests.pii import assert_no_pii
 
 from ecet.application.errors import WebhookPermanentError, WebhookTransientError
 from ecet.application.notifications import ClientNotification
-from ecet.application.use_cases.notify_client import NotifyClient
+from ecet.application.use_cases.notify_client import (
+    REJECTED,
+    TENANT_INACTIVE,
+    UNREACHABLE,
+    NotifyClient,
+    tenant_inactive,
+)
 from ecet.domain.claim import Claim, ClaimStatus, RedactedText, SourceObject
+from ecet.domain.errors import TenantNotFound
 from ecet.domain.evaluation import Decision, Evaluation
 from ecet.domain.ids import ClaimId, PolicyId
 from ecet.domain.policy import Icd10Code
@@ -34,12 +41,12 @@ def build_tenant() -> Tenant:
     )
 
 
-def build_claim() -> Claim:
+def build_claim(status: ClaimStatus = ClaimStatus.EVALUATED) -> Claim:
     return Claim(
         id=ClaimId(uuid4()),
         tenant_id="tenant-a",
         source=SourceObject(bucket="claims", key=KEY, etag="etag-1", size=2048),
-        status=ClaimStatus.EVALUATED,
+        status=status,
         redacted=RedactedText(
             text="Patient <PERSON> with M54.5 after nine weeks.", redactor="fake"
         ),
@@ -61,7 +68,7 @@ def build_claim() -> Claim:
 
 
 def build_use_case(webhook: FakeWebhookClient) -> NotifyClient:
-    return NotifyClient(FakeTenantRepository([build_tenant()]), webhook, FixedClock(NOW))
+    return NotifyClient(webhook, FixedClock(NOW))
 
 
 async def test_a_successful_delivery_sends_the_full_payload() -> None:
@@ -69,7 +76,7 @@ async def test_a_successful_delivery_sends_the_full_payload() -> None:
     claim = build_claim()
 
     payload = await build_use_case(webhook).execute(
-        claim, outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
+        claim, build_tenant(), outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
     )
 
     assert len(webhook.deliveries) == 1
@@ -92,7 +99,7 @@ async def test_the_payload_carries_no_claim_text() -> None:
     claim = build_claim()
 
     await build_use_case(webhook).execute(
-        claim, outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
+        claim, build_tenant(), outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
     )
 
     body = webhook.deliveries[0][1].model_dump_json()
@@ -102,34 +109,40 @@ async def test_the_payload_carries_no_claim_text() -> None:
     assert "dev-hmac-tenant-a" not in body
 
 
-async def test_a_successful_delivery_records_the_attempt_and_clears_the_error() -> None:
+async def test_execute_does_not_touch_the_claim() -> None:
+    """The claim's attempt bookkeeping is the caller's job via `Delivery.apply_to`;
+    `execute` only builds and sends the payload."""
     claim = build_claim()
-    claim.notification_attempts = 2
+    before_attempts = claim.notification_attempts
     claim.last_notify_error = "500"
 
     await build_use_case(FakeWebhookClient()).execute(
-        claim, outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
+        claim, build_tenant(), outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
     )
 
-    assert claim.notification_attempts == 3
-    assert claim.last_notify_error is None
+    assert claim.notification_attempts == before_attempts
+    assert claim.last_notify_error == "500"
 
 
 @pytest.mark.parametrize(
     "error", [WebhookPermanentError("400"), WebhookTransientError("3 attempts failed")]
 )
-async def test_a_failed_delivery_records_the_error_and_re_raises(error: Exception) -> None:
+async def test_a_failed_delivery_re_raises_without_touching_the_claim(error: Exception) -> None:
     webhook = FakeWebhookClient(error=error)
     claim = build_claim()
+    before_attempts = claim.notification_attempts
 
     with pytest.raises(type(error)):
         await build_use_case(webhook).execute(
-            claim, outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
+            claim,
+            build_tenant(),
+            outcome=Decision.MEETS_NECESSITY,
+            confidence=0.91,
+            decided_by="auto",
         )
 
-    assert claim.notification_attempts == 1
-    assert claim.last_notify_error is not None
-    assert type(error).__name__ in claim.last_notify_error
+    assert claim.notification_attempts == before_attempts
+    assert claim.last_notify_error is None
 
 
 async def test_a_human_decision_reports_decided_by_human() -> None:
@@ -137,7 +150,7 @@ async def test_a_human_decision_reports_decided_by_human() -> None:
     claim = build_claim()
 
     payload = await build_use_case(webhook).execute(
-        claim, outcome=Decision.DOES_NOT_MEET, confidence=1.0, decided_by="human"
+        claim, build_tenant(), outcome=Decision.DOES_NOT_MEET, confidence=1.0, decided_by="human"
     )
 
     assert payload.decided_by == "human"
@@ -153,7 +166,7 @@ async def test_a_claim_with_no_evaluation_still_notifies() -> None:
     claim.evaluation = None
 
     payload = await build_use_case(webhook).execute(
-        claim, outcome=Decision.DOES_NOT_MEET, confidence=1.0, decided_by="human"
+        claim, build_tenant(), outcome=Decision.DOES_NOT_MEET, confidence=1.0, decided_by="human"
     )
 
     assert payload.matched_policy_id is None
@@ -162,11 +175,30 @@ async def test_a_claim_with_no_evaluation_still_notifies() -> None:
     assert isinstance(payload, ClientNotification)
 
 
+async def test_attempt_reports_what_to_do_without_touching_the_claim() -> None:
+    """The caller saves a claim it re-read after the POST; a NotifyClient that mutated
+    the claim it was handed would write those fields onto a stale object."""
+    claim = build_claim(status=ClaimStatus.EVALUATED)
+    before = claim.notification_attempts
+
+    delivery = await NotifyClient(FakeWebhookClient(), FixedClock(NOW)).attempt(
+        claim, build_tenant(), outcome=Decision.MEETS_NECESSITY, confidence=0.9, decided_by="auto"
+    )
+
+    assert delivery.succeeded
+    assert delivery.failure_reason is None
+    assert claim.notification_attempts == before  # untouched
+
+    delivery.apply_to(claim)
+    assert claim.notification_attempts == before + 1
+    assert claim.last_notify_error is None
+
+
 @pytest.mark.parametrize(
     ("error", "token"),
     [
-        (WebhookPermanentError("400"), "webhook_rejected"),
-        (WebhookTransientError("3 attempts failed"), "webhook_unreachable"),
+        (WebhookPermanentError("400"), REJECTED),
+        (WebhookTransientError("3 attempts failed"), UNREACHABLE),
     ],
 )
 async def test_attempt_folds_a_delivery_failure_into_its_token(
@@ -174,34 +206,51 @@ async def test_attempt_folds_a_delivery_failure_into_its_token(
 ) -> None:
     claim = build_claim()
 
-    reason = await build_use_case(FakeWebhookClient(error=error)).attempt(
-        claim, outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
+    delivery = await build_use_case(FakeWebhookClient(error=error)).attempt(
+        claim, build_tenant(), outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
     )
+    delivery.apply_to(claim)
 
-    assert reason == token
+    assert delivery.failure_reason == token
     assert claim.notification_attempts == 1
     assert claim.last_notify_error is not None
+    assert type(error).__name__ in claim.last_notify_error
 
 
-async def test_attempt_parks_an_inactive_tenant_instead_of_raising() -> None:
-    claim = build_claim()
-    inactive = build_tenant().model_copy(update={"active": False})
-    use_case = NotifyClient(FakeTenantRepository([inactive]), FakeWebhookClient(), FixedClock(NOW))
+async def test_a_rejected_delivery_carries_the_token_and_the_detail() -> None:
+    claim = build_claim(status=ClaimStatus.EVALUATED)
 
-    reason = await use_case.attempt(
-        claim, outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
+    delivery = await NotifyClient(
+        FakeWebhookClient(error=WebhookPermanentError("status 400")), FixedClock(NOW)
+    ).attempt(
+        claim, build_tenant(), outcome=Decision.MEETS_NECESSITY, confidence=0.9, decided_by="auto"
     )
+    delivery.apply_to(claim)
 
-    assert reason == "tenant_inactive"
+    assert delivery.failure_reason == REJECTED
     assert claim.last_notify_error is not None
+    assert claim.last_notify_error.startswith("WebhookPermanentError")
+    assert claim.notification_attempts == 1
 
 
-async def test_attempt_returns_none_when_the_webhook_is_delivered() -> None:
+def test_a_deactivated_tenant_is_a_delivery_that_never_happened() -> None:
+    delivery = tenant_inactive(TenantNotFound("tenant-a"))
+
+    assert delivery.failure_reason == TENANT_INACTIVE
+    assert delivery.error is not None
+    assert not delivery.succeeded
+
+
+async def test_attempt_returns_a_successful_delivery_when_the_webhook_is_delivered() -> None:
     webhook = FakeWebhookClient()
 
-    reason = await build_use_case(webhook).attempt(
-        build_claim(), outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
+    delivery = await build_use_case(webhook).attempt(
+        build_claim(),
+        build_tenant(),
+        outcome=Decision.MEETS_NECESSITY,
+        confidence=0.91,
+        decided_by="auto",
     )
 
-    assert reason is None
+    assert delivery.succeeded
     assert len(webhook.deliveries) == 1

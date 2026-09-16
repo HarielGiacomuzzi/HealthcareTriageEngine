@@ -20,8 +20,9 @@ from ecet.application.ports.clock import Clock
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.ports.webhook_client import WebhookClient
 from ecet.application.use_cases.human_review import RequestHumanReview
-from ecet.application.use_cases.notify_client import NotifyClient
+from ecet.application.use_cases.notify_client import UNREACHABLE, NotifyClient, tenant_inactive
 from ecet.domain.claim import Claim, ClaimStatus
+from ecet.domain.errors import TenantNotFound
 from ecet.domain.evaluation import ReviewReason, Route, Verdict, triage
 
 log = structlog.get_logger(__name__)
@@ -39,7 +40,7 @@ class RouteDecision:
         self._uow = uow
         self._clock = clock
         self._threshold = threshold
-        self._notify = NotifyClient(uow.tenants, webhook, clock)
+        self._notify = NotifyClient(webhook, clock)
         self._request_review = RequestHumanReview(uow.review_tasks, clock)
 
     async def execute(self, claim: Claim) -> None:
@@ -62,16 +63,23 @@ class RouteDecision:
             await self._request_review.execute(claim, self._reason_for(claim))
             self._advance(claim, ClaimStatus.REVIEW_PENDING)
         else:
-            reason = await self._notify.attempt(
-                claim,
-                outcome=evaluation.decision,
-                confidence=evaluation.confidence,
-                decided_by="auto",
-            )
-            if reason is None:
+            try:
+                tenant = await self._uow.tenants.get(claim.tenant_id)
+            except TenantNotFound as error:
+                delivery = tenant_inactive(error)
+            else:
+                delivery = await self._notify.attempt(
+                    claim,
+                    tenant,
+                    outcome=evaluation.decision,
+                    confidence=evaluation.confidence,
+                    decided_by="auto",
+                )
+            delivery.apply_to(claim)
+            if delivery.succeeded:
                 self._advance(claim, ClaimStatus.APPROVED_AUTO)
             else:
-                self._fail(claim, reason)
+                self._fail(claim, delivery.failure_reason or UNREACHABLE)
 
         await self._uow.claims.save(claim)
 

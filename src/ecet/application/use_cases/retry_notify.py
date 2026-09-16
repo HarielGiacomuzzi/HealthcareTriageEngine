@@ -19,9 +19,9 @@ from ecet.application.notifications import DecidedBy
 from ecet.application.ports.clock import Clock
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.ports.webhook_client import WebhookClient
-from ecet.application.use_cases.notify_client import NotifyClient
+from ecet.application.use_cases.notify_client import NotifyClient, tenant_inactive
 from ecet.domain.claim import Claim, ClaimStatus
-from ecet.domain.errors import InvalidTransition
+from ecet.domain.errors import InvalidTransition, TenantNotFound
 from ecet.domain.evaluation import Decision
 from ecet.domain.ids import ClaimId
 
@@ -67,16 +67,22 @@ class RetryNotify:
                 # entered once a decision exists. Refusing beats inventing an outcome.
                 raise InvalidTransition(f"claim {claim.id} has no decision to deliver")
 
-            reason = await NotifyClient(uow.tenants, self._webhook, self._clock).attempt(
-                claim, outcome=outcome, confidence=confidence, decided_by=decided_by
-            )
+            try:
+                tenant = await uow.tenants.get(claim.tenant_id)
+            except TenantNotFound as error:
+                delivery = tenant_inactive(error)
+            else:
+                delivery = await NotifyClient(self._webhook, self._clock).attempt(
+                    claim, tenant, outcome=outcome, confidence=confidence, decided_by=decided_by
+                )
+            delivery.apply_to(claim)
             now = self._clock.now()
-            if reason is None:
+            if delivery.succeeded:
                 claim.transition(target, now=now)
             else:
                 # There is no NOTIFY_FAILED -> NOTIFY_FAILED edge: the claim has not
                 # moved, only the reason it is stuck may have.
-                claim.failure_reason = reason
+                claim.failure_reason = delivery.failure_reason
                 claim.updated_at = now
             await uow.claims.save(claim)
             await uow.commit()
