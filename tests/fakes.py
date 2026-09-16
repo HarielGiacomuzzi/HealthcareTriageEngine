@@ -192,8 +192,14 @@ class FakeUnitOfWork:
         self.review_tasks = FakeReviewTaskRepository()
         self.icd10_codes = FakeIcd10CodeRepository(known_codes)
         self.commits = 0
+        #: True between `__aenter__` and `__aexit__`. The external-call tests assert a
+        #: vendor call happens with this False.
+        self.active = False
+        self.entries = 0
 
     async def __aenter__(self) -> "FakeUnitOfWork":
+        self.active = True
+        self.entries += 1
         return self
 
     async def __aexit__(
@@ -202,6 +208,7 @@ class FakeUnitOfWork:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        self.active = False
         return None
 
     async def commit(self) -> None:
@@ -325,6 +332,7 @@ class FakeLLMGateway:
         *,
         evaluation: Evaluation | None = None,
         error: Exception | None = None,
+        watch: "FakeUnitOfWork | None" = None,
     ) -> None:
         self.evaluation = evaluation or Evaluation(
             decision=Decision.MEETS_NECESSITY,
@@ -335,8 +343,12 @@ class FakeLLMGateway:
         )
         self.error = error
         self.requests: list[EvaluationRequest] = []
+        self.watch = watch
+        self.uow_open_during_call: list[bool] = []
 
     async def evaluate(self, request: EvaluationRequest) -> Evaluation:
+        if self.watch is not None:
+            self.uow_open_during_call.append(self.watch.active)
         self.requests.append(request)
         if self.error is not None:
             raise self.error
@@ -377,11 +389,17 @@ class FakeWebhookClient:
     """Records `(tenant, payload)` per delivery. `error` makes every delivery fail,
     which is how the `NOTIFY_FAILED` branch is exercised."""
 
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self, *, error: Exception | None = None, watch: "FakeUnitOfWork | None" = None
+    ) -> None:
         self.deliveries: list[tuple[Tenant, ClientNotification]] = []
         self.error = error
+        self.watch = watch
+        self.uow_open_during_call: list[bool] = []
 
     async def deliver(self, tenant: Tenant, payload: ClientNotification) -> None:
+        if self.watch is not None:
+            self.uow_open_during_call.append(self.watch.active)
         if self.error is not None:
             raise self.error
         self.deliveries.append((tenant, payload))

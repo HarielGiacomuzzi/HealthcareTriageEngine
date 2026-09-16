@@ -255,3 +255,50 @@ async def test_a_tenant_mismatch_between_message_and_claim_is_refused() -> None:
 
     assert llm.requests == []
     assert uow.claims.claims[claim.id].status is ClaimStatus.QUEUED
+
+
+async def test_the_vendor_is_called_with_no_transaction_open() -> None:
+    """Phase 4 carry-over #11: an `llm_timeout_s=60` call inside the unit of work is a
+    Postgres connection idle-in-transaction for a minute, `worker_prefetch` of them
+    per worker."""
+    claim = build_claim()
+    uow = FakeUnitOfWork(tenants=[build_tenant()], known_codes=CATALOGUE)
+    await uow.claims.add(claim)
+    llm = FakeLLMGateway(watch=uow)
+    webhook = FakeWebhookClient(watch=uow)
+    case = build_case(uow, llm, webhook)
+
+    await case.execute(build_message(claim))
+
+    assert llm.uow_open_during_call == [False]
+    assert webhook.uow_open_during_call == [False]
+
+
+async def test_the_claim_is_saved_from_the_second_unit_of_work() -> None:
+    case, uow, claim, _, _ = await build_world()
+
+    await case.execute(build_message(claim))
+
+    stored = uow.claims.claims[claim.id]
+    assert stored.status is ClaimStatus.APPROVED_AUTO
+    assert stored.evaluation is not None
+    assert stored.notification_attempts == 1
+    assert uow.entries == 2  # one read-only, one write
+
+
+async def test_a_claim_that_moved_on_while_the_vendor_was_answering_is_left_alone() -> None:
+    """The status check is repeated in the second unit of work: two workers can hold
+    the same message, and the one that finishes second must not overwrite the first."""
+    case, uow, claim, llm, _ = await build_world()
+
+    async def advance_it(request: object) -> Evaluation:
+        stolen = await uow.claims.get(claim.id)
+        stolen.transition(ClaimStatus.EVALUATION_FAILED, reason="llm_permanent_error", now=NOW)
+        await uow.claims.save(stolen)
+        return llm.evaluation
+
+    llm.evaluate = advance_it  # type: ignore[method-assign]
+
+    await case.execute(build_message(claim))
+
+    assert uow.claims.claims[claim.id].status is ClaimStatus.EVALUATION_FAILED

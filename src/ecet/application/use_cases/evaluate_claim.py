@@ -13,6 +13,15 @@ because the status check, the tenant check and the write all need it.
 The one thing re-read from the database is the ICD-10 catalogue: `domain/rules.py`
 extracts codes by pattern, which false-positives on clinical prose ("Vitamin B12"),
 and the seeded catalogue is what keeps those out of the prompt.
+
+**Read, call, write.** The vendor call and, for an `AUTO_NOTIFY` route, the webhook
+POST used to run inside the same transaction that loaded the claim — a Postgres
+connection idle-in-transaction for up to `llm_timeout_s` plus the webhook's own
+retries (Phase 4 carry-over #11). A read-only unit of work now gathers everything
+those calls need and closes before either runs; a second, later unit of work re-reads
+the claim, re-checks its status, and does every write. A crash between the two leaves
+the claim `QUEUED` and the message unacked, so RabbitMQ redelivers it — the same
+at-least-once contract Phase 4 already documents.
 """
 
 from collections.abc import Callable
@@ -26,10 +35,12 @@ from ecet.application.ports.llm_gateway import EvaluationRequest, LLMGateway
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.ports.webhook_client import WebhookClient
 from ecet.application.use_cases.human_review import RequestHumanReview
+from ecet.application.use_cases.notify_client import Delivery, NotifyClient, tenant_inactive
 from ecet.application.use_cases.route_decision import RouteDecision
 from ecet.domain.claim import Claim, ClaimStatus
-from ecet.domain.errors import ClaimNotFound
-from ecet.domain.evaluation import ReviewReason
+from ecet.domain.errors import ClaimNotFound, TenantNotFound
+from ecet.domain.evaluation import ReviewReason, Route
+from ecet.domain.tenant import Tenant
 
 log = structlog.get_logger(__name__)
 
@@ -52,46 +63,58 @@ class EvaluateClaim:
         self._llm = llm
         self._webhook = webhook
         self._clock = clock
-        self._threshold = threshold
         self._prompt_version = prompt_version
+        self._router = RouteDecision(clock=clock, threshold=threshold)
 
     async def execute(self, message: EvaluationMessage) -> None:
-        async with self._uow_factory() as uow:
+        async with self._uow_factory() as uow:  # read-only: nothing is written here
             claim = await self._load(uow, message)
             if claim is None:
                 return
-
+            tenant, tenant_error = await self._tenant(uow, claim)
             request = await self._build_request(uow, claim, message)
-            try:
-                evaluation = await self._llm.evaluate(request)
-            except LLMTransientError:
-                # The only escape hatch: the consumer nacks with requeue and RabbitMQ's
-                # x-delivery-limit eventually sends it to the DLQ. Nothing is saved, so
-                # the claim is still QUEUED for the redelivery.
-                raise
-            except (LLMInvalidOutput, LLMPermanentError) as error:
-                await self._fail(uow, claim, error)
+
+        # No connection is held for either of these. The vendor call can take
+        # `llm_timeout_s` and the POST its own timeout; both used to run inside the
+        # transaction above (Phase 4 carry-over #11).
+        try:
+            evaluation = await self._llm.evaluate(request)
+        except LLMTransientError:
+            # The only escape hatch: the consumer nacks with requeue and RabbitMQ's
+            # x-delivery-limit eventually sends it to the DLQ. Nothing is saved, so
+            # the claim is still QUEUED for the redelivery.
+            raise
+        except (LLMInvalidOutput, LLMPermanentError) as error:
+            await self._fail(message, error)
+            return
+
+        route = self._router.decide(claim, evaluation)
+        delivery: Delivery | None = None
+        if route is Route.AUTO_NOTIFY:
+            if tenant is None:
+                assert tenant_error is not None  # `_tenant` always pairs a `None` tenant with one
+                delivery = tenant_inactive(tenant_error)
+            else:
+                delivery = await NotifyClient(self._webhook, self._clock).attempt(
+                    claim,
+                    tenant,
+                    outcome=evaluation.decision,
+                    confidence=evaluation.confidence,
+                    decided_by="auto",
+                )
+
+        async with self._uow_factory() as uow:  # every write in this use case
+            fresh = await self._load(uow, message)
+            if fresh is None:
+                # Someone else moved it while the vendor was answering. Their write
+                # stands; ours is thrown away, and the message is still acked.
                 return
-
-            claim.evaluation = evaluation
-            previous = claim.status
-            claim.transition(ClaimStatus.EVALUATED, now=self._clock.now())
-            log.info(
-                "claim.transition",
-                claim_id=str(claim.id),
-                tenant_id=str(claim.tenant_id),
-                to=ClaimStatus.EVALUATED.value,
-                **{"from": previous.value},
-            )
-            await uow.claims.save(claim)
-
-            route = RouteDecision(
-                uow=uow,
-                webhook=self._webhook,
-                clock=self._clock,
-                threshold=self._threshold,
-            )
-            await route.execute(claim)
+            fresh.evaluation = evaluation
+            self._advance(fresh, ClaimStatus.EVALUATED)
+            await uow.claims.save(fresh)
+            if delivery is not None:
+                delivery.apply_to(fresh)
+            await self._router.apply(uow, fresh, route=route, delivery=delivery)
             await uow.commit()
 
     async def _load(self, uow: UnitOfWork, message: EvaluationMessage) -> Claim | None:
@@ -123,6 +146,17 @@ class EvaluateClaim:
             return None
         return claim
 
+    async def _tenant(
+        self, uow: UnitOfWork, claim: Claim
+    ) -> tuple[Tenant | None, TenantNotFound | None]:
+        """Read before the transaction closes, because the delivery happens after it.
+        A tenant deactivated since ingestion is not an error here — it is a delivery
+        that will never happen, and the claim parks under `tenant_inactive`."""
+        try:
+            return await uow.tenants.get(claim.tenant_id), None
+        except TenantNotFound as error:
+            return None, error
+
     async def _build_request(
         self, uow: UnitOfWork, claim: Claim, message: EvaluationMessage
     ) -> EvaluationRequest:
@@ -135,21 +169,37 @@ class EvaluateClaim:
             prompt_version=self._prompt_version,
         )
 
-    async def _fail(self, uow: UnitOfWork, claim: Claim, error: Exception) -> None:
+    async def _fail(self, message: EvaluationMessage, error: Exception) -> None:
+        """A vendor answer no retry can improve: park the claim and open a review."""
         reason = INVALID_OUTPUT if isinstance(error, LLMInvalidOutput) else PERMANENT_ERROR
+        async with self._uow_factory() as uow:
+            claim = await self._load(uow, message)
+            if claim is None:
+                return
+            previous = claim.status
+            claim.transition(ClaimStatus.EVALUATION_FAILED, reason=reason, now=self._clock.now())
+            log.warning(
+                "claim.failed",
+                claim_id=str(claim.id),
+                tenant_id=str(claim.tenant_id),
+                to=ClaimStatus.EVALUATION_FAILED.value,
+                reason=reason,
+                error=type(error).__name__,
+                **{"from": previous.value},
+            )
+            await RequestHumanReview(uow.review_tasks, self._clock).execute(
+                claim, ReviewReason.EVALUATION_FAILED
+            )
+            await uow.claims.save(claim)
+            await uow.commit()
+
+    def _advance(self, claim: Claim, status: ClaimStatus) -> None:
         previous = claim.status
-        claim.transition(ClaimStatus.EVALUATION_FAILED, reason=reason, now=self._clock.now())
-        log.warning(
-            "claim.failed",
+        claim.transition(status, now=self._clock.now())
+        log.info(
+            "claim.transition",
             claim_id=str(claim.id),
             tenant_id=str(claim.tenant_id),
-            to=ClaimStatus.EVALUATION_FAILED.value,
-            reason=reason,
-            error=type(error).__name__,
+            to=status.value,
             **{"from": previous.value},
         )
-        await RequestHumanReview(uow.review_tasks, self._clock).execute(
-            claim, ReviewReason.EVALUATION_FAILED
-        )
-        await uow.claims.save(claim)
-        await uow.commit()

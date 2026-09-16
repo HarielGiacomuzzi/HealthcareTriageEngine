@@ -4,13 +4,9 @@ The gate is one pure function — `triage(evaluation, threshold)` in the domain 
 everything here is the consequence: notify and approve, or open a review task and
 wait. The threshold is injected, never read from config inside the domain.
 
-`NotifyClient` and `RequestHumanReview` are built here rather than injected, for the
-same reason UC-01 builds `AttachTenantPolicies`: they depend on repositories that
-belong to one unit of work, and a unit of work outlives one message, not a process.
-
-A delivery failure does **not** open a review task. Nobody needs to read the note
-again — the decision stands, only the delivery failed — so the claim parks in
-`NOTIFY_FAILED` for an operator retry (Phase 5).
+UC-06 runs the delivery *outside* the unit of work, so this class is split in two:
+`decide` is pure (no I/O, no `uow`) and `apply` writes. `NotifyClient` and the webhook
+call happen between them, in the caller.
 """
 
 import structlog
@@ -18,36 +14,28 @@ import structlog
 from ecet import metrics
 from ecet.application.ports.clock import Clock
 from ecet.application.ports.unit_of_work import UnitOfWork
-from ecet.application.ports.webhook_client import WebhookClient
 from ecet.application.use_cases.human_review import RequestHumanReview
-from ecet.application.use_cases.notify_client import NotifyClient, tenant_inactive
+from ecet.application.use_cases.notify_client import Delivery
 from ecet.domain.claim import Claim, ClaimStatus
-from ecet.domain.errors import TenantNotFound
-from ecet.domain.evaluation import ReviewReason, Route, Verdict, triage
+from ecet.domain.evaluation import Evaluation, ReviewReason, Route, Verdict, triage
 
 log = structlog.get_logger(__name__)
 
+#: Fallback token for `delivery is None` on a route other than `HUMAN_REVIEW` — a
+#: programming error, since `AUTO_NOTIFY` always produces a `Delivery` (real or
+#: `tenant_inactive`), but the `str | None` type still needs a non-`None` reason.
+NO_DELIVERY = "no_delivery"
+
 
 class RouteDecision:
-    def __init__(
-        self,
-        *,
-        uow: UnitOfWork,
-        webhook: WebhookClient,
-        clock: Clock,
-        threshold: float,
-    ) -> None:
-        self._uow = uow
+    """UC-07, in two halves, because the delivery between them runs outside the unit of
+    work: `decide` is pure and `apply` writes."""
+
+    def __init__(self, *, clock: Clock, threshold: float) -> None:
         self._clock = clock
         self._threshold = threshold
-        self._notify = NotifyClient(webhook, clock)
-        self._request_review = RequestHumanReview(uow.review_tasks, clock)
 
-    async def execute(self, claim: Claim) -> None:
-        evaluation = claim.evaluation
-        if evaluation is None:
-            raise ValueError(f"claim {claim.id} has no evaluation to route")
-
+    def decide(self, claim: Claim, evaluation: Evaluation) -> Route:
         route = triage(evaluation, self._threshold)
         metrics.TRIAGE_ROUTE_TOTAL.labels(route=route.value).inc()
         log.info(
@@ -58,33 +46,24 @@ class RouteDecision:
             decision=evaluation.decision.value,
             confidence=evaluation.confidence,
         )
+        return route
 
+    async def apply(
+        self, uow: UnitOfWork, claim: Claim, *, route: Route, delivery: Delivery | None
+    ) -> None:
+        """`delivery` is `None` for `HUMAN_REVIEW`: nothing was sent, because nobody has
+        decided anything yet."""
         if route is Route.HUMAN_REVIEW:
-            await self._request_review.execute(claim, self._reason_for(claim))
+            await RequestHumanReview(uow.review_tasks, self._clock).execute(
+                claim, self._reason_for(claim)
+            )
             self._advance(claim, ClaimStatus.REVIEW_PENDING)
+        elif delivery is not None and delivery.succeeded:
+            self._advance(claim, ClaimStatus.APPROVED_AUTO)
         else:
-            try:
-                tenant = await self._uow.tenants.get(claim.tenant_id)
-            except TenantNotFound as error:
-                delivery = tenant_inactive(error)
-            else:
-                delivery = await self._notify.attempt(
-                    claim,
-                    tenant,
-                    outcome=evaluation.decision,
-                    confidence=evaluation.confidence,
-                    decided_by="auto",
-                )
-            delivery.apply_to(claim)
-            if delivery.succeeded:
-                self._advance(claim, ClaimStatus.APPROVED_AUTO)
-            else:
-                # `succeeded` is `failure_reason is None`, so the `else` branch always
-                # has one; the fallback is only to satisfy the `str | None` type.
-                assert delivery.failure_reason is not None
-                self._fail(claim, delivery.failure_reason)
-
-        await self._uow.claims.save(claim)
+            reason = delivery.failure_reason if delivery is not None else NO_DELIVERY
+            self._fail(claim, reason or NO_DELIVERY)
+        await uow.claims.save(claim)
 
     @staticmethod
     def _reason_for(claim: Claim) -> ReviewReason:
