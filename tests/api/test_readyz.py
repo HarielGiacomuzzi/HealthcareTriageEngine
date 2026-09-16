@@ -30,3 +30,14 @@ async def test_a_raising_probe_reports_false_rather_than_500(harness: ApiHarness
 
     assert response.status_code == 503
     assert response.json()["database"] is False
+
+
+async def test_readyz_with_no_probes_is_not_ready(harness: ApiHarness) -> None:
+    """`all([])` is True. A container that registered nothing has checked nothing, and
+    "nothing checked" is not "ready"."""
+    harness.container.probes.clear()
+
+    async with harness.client() as client:
+        response = await client.get("/readyz")
+
+    assert response.status_code == 503

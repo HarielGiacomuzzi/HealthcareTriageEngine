@@ -85,3 +85,24 @@ async def test_an_unmapped_domain_error_is_a_500() -> None:
 
     assert response.status_code == 500
     assert response.json()["title"] == "Internal error"
+
+
+async def test_an_unhandled_error_logs_the_claim_id_from_the_path() -> None:
+    """api spec: "Unhandled → 500, logged with `claim_id` if known". On a claim route
+    it is known — it is in the path."""
+    app = FastAPI()
+    register_error_handlers(app)
+
+    @app.post("/v1/claims/{claim_id}/boom")
+    async def boom(claim_id: str) -> None:
+        raise RuntimeError("a bug, not a domain error")
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    with structlog.testing.capture_logs() as captured:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/v1/claims/c-123/boom")
+
+    assert response.status_code == 500
+    (entry,) = [e for e in captured if e["event"] == "api.unhandled_error"]
+    assert entry["claim_id"] == "c-123"
+    assert "c-123" not in response.text
