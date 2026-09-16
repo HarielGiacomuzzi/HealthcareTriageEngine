@@ -3,13 +3,15 @@ done, only the webhook is outstanding — and a task is invisible to every other
 
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+import structlog.testing
 from tests.fakes import FakeUnitOfWork, FakeWebhookClient, FixedClock
 from tests.pii import assert_no_pii
 
 from ecet.application.errors import WebhookTransientError
+from ecet.application.notifications import ClientNotification
 from ecet.application.use_cases.human_review import ResolveReview, ResolveReviewCommand
 from ecet.domain.claim import Claim, ClaimStatus, RedactedText, SourceObject
 from ecet.domain.errors import InvalidTransition, ReviewAlreadyResolved, ReviewTaskNotFound
@@ -20,7 +22,8 @@ from ecet.domain.evaluation import (
     ReviewStatus,
     ReviewTask,
 )
-from ecet.domain.ids import ClaimId
+from ecet.domain.ids import ClaimId, PolicyId
+from ecet.domain.policy import Icd10Code
 from ecet.domain.tenant import Tenant
 
 NOW = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
@@ -44,7 +47,10 @@ def build_claim(status: ClaimStatus) -> Claim:
         evaluation = Evaluation(
             decision=Decision.INSUFFICIENT_EVIDENCE,
             confidence=0.4,
+            matched_policy_id=PolicyId(uuid4()),
+            cited_codes=[Icd10Code(code="M54.5"), Icd10Code(code="M25.51")],
             rationale="The note leaves the required criteria undocumented.",
+            evidence_missing=["conservative therapy >= 6 weeks"],
             model="fake-deterministic",
             prompt_version="v1",
         )
@@ -65,10 +71,10 @@ def build_claim(status: ClaimStatus) -> Claim:
 class Case:
     """A claim waiting on its review task, wired to UC-09c over fakes."""
 
-    def __init__(self, claim: Claim, webhook: FakeWebhookClient) -> None:
+    def __init__(self, claim: Claim, webhook: FakeWebhookClient, tenant: Tenant) -> None:
         self.claim = claim
         self.webhook = webhook
-        self.uow = FakeUnitOfWork(tenants=[build_tenant()])
+        self.uow = FakeUnitOfWork(tenants=[tenant])
         self.task = ReviewTask(
             id=uuid4(),
             claim_id=claim.id,
@@ -102,8 +108,9 @@ async def build_case(
     *,
     status: ClaimStatus = ClaimStatus.REVIEW_PENDING,
     webhook: FakeWebhookClient | None = None,
+    tenant: Tenant | None = None,
 ) -> Case:
-    case = Case(build_claim(status), webhook or FakeWebhookClient())
+    case = Case(build_claim(status), webhook or FakeWebhookClient(), tenant or build_tenant())
     await case.uow.claims.add(case.claim)
     await case.uow.review_tasks.add(case.task)
     return case
@@ -129,6 +136,9 @@ async def test_resolving_records_the_decision_and_notifies_as_human() -> None:
     # the write transaction closes would ship a blank rationale and no cited codes.
     assert case.claim.evaluation is not None
     assert payload.rationale == case.claim.evaluation.rationale
+    assert payload.matched_policy_id == case.claim.evaluation.matched_policy_id
+    assert payload.cited_codes == ["M54.5", "M25.51"]
+    assert payload.evidence_missing == case.claim.evaluation.evidence_missing
     assert case.stored_claim().status is ClaimStatus.REVIEW_RESOLVED
     assert result.task_id == case.task.id
     assert result.claim_id == case.claim.id
@@ -145,6 +155,24 @@ async def test_the_webhook_is_delivered_with_no_transaction_open() -> None:
 
     assert case.webhook.uow_open_during_call == [False]
     assert case.uow.entries == 2
+    assert_no_pii(case.webhook.deliveries[0][1].model_dump_json())
+
+
+async def test_a_deactivated_tenant_parks_the_claim_without_a_delivery() -> None:
+    """`_tenant` moved out of the transaction in Task 10; this is the one path that
+    exercises its `TenantNotFound` arm end to end through `ResolveReview`."""
+    inactive_tenant = build_tenant().model_copy(update={"active": False})
+    case = await build_case(tenant=inactive_tenant)
+
+    result = await case.use_case.execute(case.command())
+
+    claim = case.stored_claim()
+    assert claim.status is ClaimStatus.NOTIFY_FAILED
+    assert claim.failure_reason == "tenant_inactive"
+    assert claim.notification_attempts == 0  # nothing left the process
+    assert case.webhook.deliveries == []
+    assert result.claim_status is ClaimStatus.NOTIFY_FAILED
+    assert case.uow.commits == 1
 
 
 async def test_the_reviewers_notes_never_reach_the_webhook() -> None:
@@ -180,6 +208,39 @@ async def test_an_already_resolved_task_is_refused_before_anything_is_sent() -> 
     assert case.uow.commits == 0
 
 
+class RacingWebhook(FakeWebhookClient):
+    """Resolves the task from under the request while its POST is in flight — the
+    other request that won the race to `task.resolve` in a second, concurrent call."""
+
+    def __init__(self, task: ReviewTask, tasks: dict[UUID, ReviewTask]) -> None:
+        super().__init__()
+        self._task = task
+        self._tasks = tasks
+
+    async def deliver(self, tenant: Tenant, payload: ClientNotification) -> None:
+        await super().deliver(tenant, payload)
+        self._task.resolve(resolution="MEETS_NECESSITY", reviewer="dr.diallo", notes=None, now=NOW)
+        self._tasks[self._task.id] = self._task
+
+
+async def test_a_task_resolved_mid_delivery_is_logged_and_refused() -> None:
+    case = await build_case()
+    case.webhook = RacingWebhook(case.task, case.uow.review_tasks.tasks)
+    case.use_case = ResolveReview(
+        uow_factory=lambda: case.uow, webhook=case.webhook, clock=FixedClock(NOW)
+    )
+
+    with structlog.testing.capture_logs() as captured, pytest.raises(ReviewAlreadyResolved):
+        await case.use_case.execute(case.command())
+
+    # The winner's decision stands; this request's does not, but its webhook already
+    # reached the client, so the loss is logged rather than swallowed into a false 200.
+    assert case.stored_task().reviewer == "dr.diallo"
+    assert len(case.webhook.deliveries) == 1
+    assert case.uow.commits == 0
+    assert any(entry.get("event") == "review.resolve_lost_race" for entry in captured)
+
+
 async def test_a_cross_tenant_resolve_is_not_found() -> None:
     case = await build_case()
 
@@ -203,7 +264,9 @@ async def test_a_failed_delivery_still_records_the_resolution() -> None:
 
     result = await case.use_case.execute(case.command())
 
-    assert case.stored_task().status is ReviewStatus.RESOLVED
+    task = case.stored_task()
+    assert task.status is ReviewStatus.RESOLVED
+    assert task.reviewer == "nurse.okafor"
     claim = case.stored_claim()
     assert claim.status is ClaimStatus.NOTIFY_FAILED
     assert claim.failure_reason == "webhook_unreachable"
