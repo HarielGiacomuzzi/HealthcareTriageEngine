@@ -8,6 +8,7 @@ from ecet import __version__, metrics  # noqa: F401 -- import registers the coll
 from ecet.config import Settings
 from ecet.interfaces.api.container import ApiContainer, build_container
 from ecet.interfaces.api.errors import register_error_handlers
+from ecet.interfaces.api.middleware import bind_request_id
 from ecet.interfaces.api.routes import claims, events, health, reviews
 
 
@@ -31,6 +32,7 @@ def create_app(settings: Settings, container: ApiContainer | None = None) -> Fas
 
     app = FastAPI(title="ECET API", version=__version__, lifespan=lifespan)
     app.state.settings = settings
+    app.middleware("http")(bind_request_id)
     if container is not None:
         app.state.container = container
     register_error_handlers(app)

@@ -39,6 +39,15 @@ QUEUE = "claims.evaluate"
 DLQ = "claims.evaluate.dlq"
 ROUTING_KEY = "claims.evaluate"
 
+REQUEST_ID_HEADER = "x-request-id"
+
+
+def _request_id() -> str | None:
+    """The id the api bound for this request, if this publish happens inside one."""
+    value = structlog.contextvars.get_contextvars().get("request_id")
+    return str(value) if value is not None else None
+
+
 QUEUE_ARGUMENTS: FieldTable = {
     "x-queue-type": "quorum",
     "x-dead-letter-exchange": DLX,
@@ -68,7 +77,7 @@ async def declare_topology(channel: AbstractChannel) -> Topology:
 #: The headers the publisher sets. The broker's own bookkeeping (`x-death`,
 #: `x-delivery-count`, `x-first-death-*`) is dropped so a replayed message starts a
 #: fresh delivery budget.
-REPLAYED_HEADERS: tuple[str, ...] = ("x-tenant-id", "x-schema-version")
+REPLAYED_HEADERS: tuple[str, ...] = ("x-tenant-id", "x-schema-version", REQUEST_ID_HEADER)
 
 
 async def replay_dead_letters(url: str, *, limit: int) -> int:
@@ -158,6 +167,13 @@ class RabbitMqEvaluationQueue:
         exchange = self._exchange
         if exchange is None:
             raise QueuePublishError("queue connection is not open")
+        headers: FieldTable = {
+            "x-tenant-id": str(message.tenant_id),
+            "x-schema-version": message.schema_version,
+        }
+        request_id = _request_id()
+        if request_id is not None:
+            headers[REQUEST_ID_HEADER] = request_id
         try:
             await exchange.publish(
                 Message(
@@ -165,10 +181,7 @@ class RabbitMqEvaluationQueue:
                     content_type="application/json",
                     delivery_mode=DeliveryMode.PERSISTENT,
                     message_id=str(message.message_id),
-                    headers={
-                        "x-tenant-id": str(message.tenant_id),
-                        "x-schema-version": message.schema_version,
-                    },
+                    headers=headers,
                 ),
                 routing_key=ROUTING_KEY,
             )
@@ -253,26 +266,38 @@ class RabbitMqConsumer:
                 await message.nack(requeue=False)
                 return
 
+            context: dict[str, str] = {
+                "message_id": str(parsed.message_id),
+                "claim_id": str(parsed.claim_id),
+                "tenant_id": str(parsed.tenant_id),
+            }
+            request_id = (message.headers or {}).get(REQUEST_ID_HEADER)
+            if request_id is not None:
+                context["request_id"] = str(request_id)
+            structlog.contextvars.bind_contextvars(**context)
             try:
-                await self._handler(parsed)
-            # `Exception`, not `BaseException`: a `CancelledError` must propagate.
-            # `stop()` closes the connection after `drain_timeout`, which cancels the
-            # in-flight callbacks — classifying that as DLQ would dead-letter a message
-            # the broker will happily redeliver on channel close, and would swallow the
-            # cancellation from the caller that asked for it.
-            except Exception as error:
-                requeue = self._should_requeue(error)
-                log.warning(
-                    "queue.nacked",
-                    claim_id=str(parsed.claim_id),
-                    tenant_id=str(parsed.tenant_id),
-                    requeue=requeue,
-                    delivery_count=(message.headers or {}).get("x-delivery-count"),
-                    error=type(error).__name__,
-                )
-                await message.nack(requeue=requeue)
-            else:
-                await message.ack()
+                try:
+                    await self._handler(parsed)
+                # `Exception`, not `BaseException`: a `CancelledError` must propagate.
+                # `stop()` closes the connection after `drain_timeout`, which cancels the
+                # in-flight callbacks — classifying that as DLQ would dead-letter a message
+                # the broker will happily redeliver on channel close, and would swallow the
+                # cancellation from the caller that asked for it.
+                except Exception as error:
+                    requeue = self._should_requeue(error)
+                    log.warning(
+                        "queue.nacked",
+                        claim_id=str(parsed.claim_id),
+                        tenant_id=str(parsed.tenant_id),
+                        requeue=requeue,
+                        delivery_count=(message.headers or {}).get("x-delivery-count"),
+                        error=type(error).__name__,
+                    )
+                    await message.nack(requeue=requeue)
+                else:
+                    await message.ack()
+            finally:
+                structlog.contextvars.clear_contextvars()
         finally:
             self._in_flight -= 1
             if self._in_flight == 0:
