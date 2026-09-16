@@ -81,3 +81,20 @@ def test_the_rabbitmq_healthcheck_does_not_run_as_root(compose: dict[str, Any]) 
     probe = compose["services"]["rabbitmq"]["healthcheck"]["test"]
 
     assert probe[:3] == ["CMD", "gosu", "rabbitmq"]
+
+
+def test_the_api_waits_for_the_mock_client_it_now_delivers_to(compose: dict[str, Any]) -> None:
+    # UC-09c and the operator retry send webhooks from the api process.
+    assert compose["services"]["api"]["depends_on"]["mock-client"]["condition"] == (
+        "service_healthy"
+    )
+
+
+def test_the_default_stack_never_calls_a_real_vendor(compose: dict[str, Any]) -> None:
+    # `make up` copies `.env.example` to `.env`, and compose takes the provider from it.
+    # A real vendor is opt-in per machine, never a default and never a compose override.
+    example = (COMPOSE.parent / ".env.example").read_text(encoding="utf-8").splitlines()
+
+    assert "ECET_LLM_PROVIDER=fake" in example
+    for service in ("api", "worker"):
+        assert "ECET_LLM_PROVIDER" not in compose["services"][service].get("environment", {})

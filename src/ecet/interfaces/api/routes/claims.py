@@ -17,12 +17,17 @@ against.
 `POST /v1/claims/ingest` and `POST /v1/events/s3` both refuse a bucket other than
 `ECET_S3_BUCKET`. Nothing else constrains which bucket a caller can name, and both
 paths otherwise read whatever they are told to.
+
+`POST /v1/claims/{id}/retry-notify` takes the api key only, as the api spec lists it:
+it is an operator action, like manual ingest, and v1's single global key already
+reaches every tenant. It re-sends a decision that exists; it never decides anything.
 """
 
 from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from ecet.application.errors import ObjectNotFound
@@ -103,3 +108,13 @@ async def get_claim(claim_id: UUID, tenant_id: TenantDep, container: ContainerDe
         # Same answer as "no such claim" — anything else confirms its existence.
         raise ClaimNotFound(str(claim_id))
     return ClaimView.of(claim)
+
+
+@router.post("/v1/claims/{claim_id}/retry-notify")
+async def retry_notify(claim_id: UUID, container: ContainerDep) -> JSONResponse:
+    """Re-send a `NOTIFY_FAILED` claim's decision. 200 with the claim when it landed;
+    502 with the same body when it failed again, so a scripted `curl -f` notices. A
+    claim in any other state is 409 (`InvalidTransition`)."""
+    claim = await container.retry_notify.execute(ClaimId(claim_id))
+    status_code = 502 if claim.status is ClaimStatus.NOTIFY_FAILED else 200
+    return JSONResponse(ClaimView.of(claim).model_dump(mode="json"), status_code=status_code)

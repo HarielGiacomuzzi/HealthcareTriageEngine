@@ -18,14 +18,17 @@ from tests.fakes import (
     FakePiiRedactor,
     FakeTextExtractor,
     FakeUnitOfWork,
+    FakeWebhookClient,
     FixedClock,
 )
 from tests.pii import read_note
 
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.use_cases.enqueue_evaluation import EnqueueEvaluation
+from ecet.application.use_cases.human_review import ListOpenReviews, ResolveReview
 from ecet.application.use_cases.ingest_claim_document import IngestClaimDocument
 from ecet.application.use_cases.redact_pii import RedactPii
+from ecet.application.use_cases.retry_notify import RetryNotify
 from ecet.application.use_cases.run_deterministic_checks import RunDeterministicChecks
 from ecet.config import Settings
 from ecet.domain.ids import PolicyId
@@ -77,6 +80,7 @@ class ApiHarness:
         )
         self.storage = FakeObjectStorage({(BUCKET, KEY): PDF})
         self.queue = FakeEvaluationQueue()
+        self.webhook = FakeWebhookClient()
         self.settings = Settings(_env_file=None, s3_event_token=EVENT_TOKEN, api_key=API_KEY)
         uow_factory: Callable[[], UnitOfWork] = self._uow_factory
         self.ingest = IngestClaimDocument(
@@ -99,6 +103,13 @@ class ApiHarness:
             uow_factory=uow_factory,
             storage=self.storage,
             ingest=self.ingest,
+            list_reviews=ListOpenReviews(uow_factory=uow_factory),
+            resolve_review=ResolveReview(
+                uow_factory=uow_factory, webhook=self.webhook, clock=self.clock
+            ),
+            retry_notify=RetryNotify(
+                uow_factory=uow_factory, webhook=self.webhook, clock=self.clock
+            ),
             probes={name: self._probe(name) for name in self.probe_results},
             aclose=self._aclose,
         )

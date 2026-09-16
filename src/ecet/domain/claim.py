@@ -129,8 +129,11 @@ _ALLOWED: dict[ClaimStatus, frozenset[ClaimStatus]] = {
     ClaimStatus.REVIEW_RESOLVED: frozenset({ClaimStatus.NOTIFY_FAILED}),
     # Operator retry: POST /v1/claims/{id}/retry-notify.
     ClaimStatus.NOTIFY_FAILED: frozenset({ClaimStatus.APPROVED_AUTO, ClaimStatus.REVIEW_RESOLVED}),
-    # UC-06 opens a review task on invalid LLM output; a human still resolves it.
-    ClaimStatus.EVALUATION_FAILED: frozenset({ClaimStatus.REVIEW_RESOLVED}),
+    # UC-06 opens a review task on invalid LLM output; a human still resolves it, and
+    # that resolution's webhook can fail like any other (UC-09c step 4).
+    ClaimStatus.EVALUATION_FAILED: frozenset(
+        {ClaimStatus.REVIEW_RESOLVED, ClaimStatus.NOTIFY_FAILED}
+    ),
     ClaimStatus.EXTRACTION_FAILED: frozenset(),
     ClaimStatus.NO_POLICIES: frozenset(),
 }

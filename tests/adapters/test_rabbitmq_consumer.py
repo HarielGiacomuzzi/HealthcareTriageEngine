@@ -15,8 +15,12 @@ from ecet.application.errors import LLMTransientError
 from ecet.application.messages import EvaluationMessage
 from ecet.infrastructure.queue.rabbitmq import (
     DLQ,
+    DLX,
+    QUEUE,
+    ROUTING_KEY,
     RabbitMqConsumer,
     RabbitMqEvaluationQueue,
+    replay_dead_letters,
 )
 from ecet.interfaces.worker.handler import should_requeue
 
@@ -156,3 +160,50 @@ async def test_a_requeue_classified_failure_is_redelivered(
         await consumer.stop()
 
     assert len(attempts) >= 2
+
+
+async def test_dlq_replay_moves_dead_letters_back_within_the_limit(
+    publisher: RabbitMqEvaluationQueue, amqp_url: str
+) -> None:
+    # `publisher` has declared the topology. Start from empty queues so leftovers from
+    # the other tests in this module cannot be mistaken for a replayed message.
+    sent = [build_message(), build_message()]
+    connection = await aio_pika.connect_robust(amqp_url)
+    async with connection:
+        channel = await connection.channel()
+        await (await channel.get_queue(QUEUE)).purge()
+        await (await channel.get_queue(DLQ)).purge()
+        dlx = await channel.get_exchange(DLX)
+        for message in sent:
+            await dlx.publish(
+                aio_pika.Message(
+                    body=message.model_dump_json().encode("utf-8"),
+                    content_type="application/json",
+                    message_id=str(message.message_id),
+                    headers={"x-tenant-id": "tenant-a", "x-schema-version": 1},
+                ),
+                routing_key=ROUTING_KEY,
+            )
+
+    assert await replay_dead_letters(amqp_url, limit=1) == 1
+    assert await replay_dead_letters(amqp_url, limit=10) == 1
+    assert await replay_dead_letters(amqp_url, limit=10) == 0
+
+    connection = await aio_pika.connect_robust(amqp_url)
+    async with connection:
+        channel = await connection.channel()
+        work = await channel.get_queue(QUEUE)
+        replayed = []
+        for _ in sent:
+            delivered = await work.get(timeout=10)
+            assert delivered is not None
+            await delivered.ack()
+            replayed.append(delivered)
+        assert await (await channel.get_queue(DLQ)).get(fail=False) is None
+
+    claim_ids = {EvaluationMessage.model_validate_json(m.body).claim_id for m in replayed}
+    assert claim_ids == {message.claim_id for message in sent}
+    assert all(m.headers["x-tenant-id"] == "tenant-a" for m in replayed)
+    assert all(m.delivery_mode == 2 for m in replayed)
+    for m in replayed:
+        assert_no_pii(m.body.decode("utf-8"))

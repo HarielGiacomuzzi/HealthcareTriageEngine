@@ -160,3 +160,48 @@ async def test_a_claim_with_no_evaluation_still_notifies() -> None:
     assert payload.cited_codes == []
     assert payload.rationale == ""
     assert isinstance(payload, ClientNotification)
+
+
+@pytest.mark.parametrize(
+    ("error", "token"),
+    [
+        (WebhookPermanentError("400"), "webhook_rejected"),
+        (WebhookTransientError("3 attempts failed"), "webhook_unreachable"),
+    ],
+)
+async def test_attempt_folds_a_delivery_failure_into_its_token(
+    error: Exception, token: str
+) -> None:
+    claim = build_claim()
+
+    reason = await build_use_case(FakeWebhookClient(error=error)).attempt(
+        claim, outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
+    )
+
+    assert reason == token
+    assert claim.notification_attempts == 1
+    assert claim.last_notify_error is not None
+
+
+async def test_attempt_parks_an_inactive_tenant_instead_of_raising() -> None:
+    claim = build_claim()
+    inactive = build_tenant().model_copy(update={"active": False})
+    use_case = NotifyClient(FakeTenantRepository([inactive]), FakeWebhookClient(), FixedClock(NOW))
+
+    reason = await use_case.attempt(
+        claim, outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
+    )
+
+    assert reason == "tenant_inactive"
+    assert claim.last_notify_error is not None
+
+
+async def test_attempt_returns_none_when_the_webhook_is_delivered() -> None:
+    webhook = FakeWebhookClient()
+
+    reason = await build_use_case(webhook).attempt(
+        build_claim(), outcome=Decision.MEETS_NECESSITY, confidence=0.91, decided_by="auto"
+    )
+
+    assert reason is None
+    assert len(webhook.deliveries) == 1

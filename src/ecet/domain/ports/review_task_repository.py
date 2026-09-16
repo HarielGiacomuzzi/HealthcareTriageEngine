@@ -20,6 +20,12 @@ class ReviewTaskRepository(Protocol):
         `review_tasks.claim_id` is unique in the postgres schema."""
         ...
 
+    async def find_by_claim(self, claim_id: ClaimId) -> ReviewTask | None:
+        """The claim's task in any status. `review_tasks.claim_id` is unique, so a claim
+        has at most one task, ever — which is how the operator retry tells a human
+        decision (UC-09c) from an automatic one (UC-07)."""
+        ...
+
     async def list_open(self, tenant_id: TenantId, limit: int = 50) -> list[ReviewTask]:
         """Tenant-scoped; there is no cross-tenant listing."""
         ...

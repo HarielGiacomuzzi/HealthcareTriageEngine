@@ -214,3 +214,23 @@ async def test_review_task_repository_finds_the_open_task_for_a_claim() -> None:
     task.status = ReviewStatus.RESOLVED
     await repo.save(task)
     assert await repo.find_open_by_claim(claim_id) is None
+
+
+async def test_review_task_repository_finds_a_claims_task_in_any_status() -> None:
+    """`RetryNotify` needs the task after it is resolved; `find_open_by_claim` cannot
+    see it by design."""
+    repo = FakeReviewTaskRepository()
+    claim_id = ClaimId(uuid4())
+    task = ReviewTask(
+        id=uuid4(),
+        claim_id=claim_id,
+        tenant_id=TENANT,
+        reason=ReviewReason.LOW_CONFIDENCE,
+        created_at=NOW,
+    )
+    await repo.add(task)
+    task.status = ReviewStatus.RESOLVED
+    await repo.save(task)
+
+    assert await repo.find_by_claim(claim_id) == task
+    assert await repo.find_by_claim(ClaimId(uuid4())) is None

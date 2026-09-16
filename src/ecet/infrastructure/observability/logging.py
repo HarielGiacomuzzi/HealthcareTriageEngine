@@ -6,7 +6,9 @@ from typing import Any
 import structlog
 from structlog.typing import EventDict
 
-SENSITIVE_FIELDS = frozenset({"text", "raw_text", "redacted_text", "webhook_secret", "api_key"})
+SENSITIVE_FIELDS = frozenset(
+    {"text", "raw_text", "redacted_text", "notes", "webhook_secret", "api_key"}
+)
 
 
 def drop_sensitive_fields(logger: Any, method_name: str, event_dict: EventDict) -> EventDict:
