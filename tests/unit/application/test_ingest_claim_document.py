@@ -27,7 +27,12 @@ from ecet.application.use_cases.ingest_claim_document import (
 from ecet.application.use_cases.redact_pii import RedactPii
 from ecet.application.use_cases.run_deterministic_checks import RunDeterministicChecks
 from ecet.domain.claim import ClaimStatus
-from ecet.domain.errors import InvalidObjectKey, PdfTooLarge, TenantNotFound
+from ecet.domain.errors import (
+    InvalidObjectKey,
+    NoPoliciesForTenant,
+    PdfTooLarge,
+    TenantNotFound,
+)
 from ecet.domain.evaluation import ReviewReason, ReviewStatus
 from ecet.domain.ids import PolicyId, TenantId
 from ecet.domain.policy import Policy
@@ -195,8 +200,6 @@ async def test_an_oversized_object_is_rejected_before_any_io() -> None:
 
 
 async def test_a_tenant_with_no_policies_persists_no_policies_and_raises() -> None:
-    from ecet.domain.errors import NoPoliciesForTenant
-
     harness = Harness(policies=[])
 
     with pytest.raises(NoPoliciesForTenant):
@@ -380,3 +383,79 @@ async def test_a_failed_ingest_is_timed_as_failed() -> None:
         await harness.ingest()
 
     assert sample("ecet_ingest_seconds_count", outcome="failed") == before + 1
+
+
+@pytest.mark.parametrize(
+    ("note", "minimum_writes"),
+    [
+        ("meets", 3),  # add, save POLICIES_ATTACHED, save QUEUED
+        ("unclear", 3),
+        ("excluded_code", 2),  # add, save REVIEW_PENDING
+    ],
+)
+async def test_no_claim_written_during_ingestion_carries_pii(
+    note: str, minimum_writes: int
+) -> None:
+    """UC-01's test list asks for the ADR-001 assertion on every `claims.save`
+    argument, not only on the row that is left at the end."""
+    harness = Harness(note=note)
+
+    await harness.ingest()
+
+    assert len(harness.uow.claims.writes) >= minimum_writes
+    for written in harness.uow.claims.writes:
+        assert_no_pii(written.model_dump_json())
+
+
+async def test_a_failed_ingestion_writes_no_pii_either() -> None:
+    harness = Harness(policies=[])
+
+    with pytest.raises(NoPoliciesForTenant):
+        await harness.ingest()
+
+    assert harness.uow.claims.writes
+    for written in harness.uow.claims.writes:
+        assert_no_pii(written.model_dump_json())
+
+
+async def test_a_duplicate_of_a_claim_under_review_is_returned_untouched() -> None:
+    harness = Harness(note="excluded_code")
+    first = await harness.ingest()
+    assert first.status is ClaimStatus.REVIEW_PENDING
+    writes_before = len(harness.uow.claims.writes)
+
+    second = await harness.ingest()
+
+    assert second.duplicate is True
+    assert second.claim_id == first.claim_id
+    assert second.status is ClaimStatus.REVIEW_PENDING
+    assert harness.extractor.calls == 1
+    assert harness.queue.published == []
+    assert len(harness.uow.claims.writes) == writes_before
+    assert len(harness.uow.review_tasks.tasks) == 1
+
+
+async def test_a_duplicate_of_a_failed_claim_is_not_retried() -> None:
+    """ADR-006: same object, same content, same answer. A blank page stays blank."""
+    harness = Harness(extractor=FakeTextExtractor(error=ExtractionFailed("no_text")))
+    with pytest.raises(ExtractionFailed):
+        await harness.ingest()
+
+    second = await harness.ingest()
+
+    assert second.duplicate is True
+    assert second.status is ClaimStatus.EXTRACTION_FAILED
+    assert harness.extractor.calls == 1
+
+
+async def test_the_duplicate_check_runs_before_the_tenant_lookup() -> None:
+    """A tenant deactivated after its claim arrived must not turn a replayed event into
+    a 404 — the claim exists, and the duplicate answer is the truthful one."""
+    harness = Harness()
+    first = await harness.ingest()
+    harness.uow.tenants.tenants.clear()
+
+    second = await harness.ingest()
+
+    assert second.duplicate is True
+    assert second.claim_id == first.claim_id
