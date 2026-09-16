@@ -2,10 +2,10 @@
 
 ## Dockerfile (root, single image)
 Multi-stage:
-1. `builder`: `python:3.12-slim`, install `uv`, `uv sync --frozen --no-dev`, `spacy download en_core_web_lg` into venv.
+1. `builder`: `python:3.12-slim`, install `uv`, `uv sync --frozen --no-dev`, `spacy download en_core_web_lg-3.8.0 --direct` (pinned, `SPACY_MODEL_VERSION` build arg) into venv.
 2. `runtime`: `python:3.12-slim`, copy venv + `src/`, non-root user, `ENTRYPOINT ["ecet"]`, `CMD ["api"]`.
 Healthcheck: `curl -f localhost:8000/readyz` (api). Worker overrides cmd + healthcheck in compose.
-Image target ≈ 1.5 GB (spaCy lg). Document; `en_core_web_md` swap via build arg `SPACY_MODEL` for smaller demo.
+Image measured 1.71 GB (spaCy lg). Document; `en_core_web_md` swap via build arg `SPACY_MODEL` for smaller demo.
 
 ## docker-compose.yml services
 
@@ -16,10 +16,10 @@ Image target ≈ 1.5 GB (spaCy lg). Document; `en_core_web_md` swap via build ar
 | minio         | minio/minio           | 9000, 9001   | —                    |
 | minio-setup   | minio/mc (one-shot)   | —            | minio, api           |
 | api           | build .  cmd `api`    | 8000         | postgres, rabbitmq   |
-| worker        | build .  cmd `worker` | 9100         | postgres, rabbitmq   |
+| worker        | build .  cmd `worker` | — (9100 internal) | postgres, rabbitmq   |
 | mock-client   | build services/mock-client | 8081    | —                    |
-| prometheus    | prom/prometheus (profile `observability`) | 9090 | — |
-| grafana       | grafana/grafana (profile `observability`) | 3000 | — |
+| prometheus    | prom/prometheus (profile `observability`) | 9090 | api, worker (plain) |
+| grafana       | grafana/grafana (profile `observability`) | 3000 | prometheus (plain) |
 
 Notes:
 - `minio-setup` depends on `api` healthy because webhook target registration is validated by MinIO at `mc event add`.

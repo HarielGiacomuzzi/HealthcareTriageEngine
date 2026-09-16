@@ -7,7 +7,7 @@
 | Use cases | `tests/unit/application` | fakes in `tests/fakes.py` | — | every commit |
 | API       | `tests/api`       | FastAPI + fakes      | —      | every commit |
 | Adapters  | `tests/adapters`  | testcontainers (pg, rabbit, minio), real presidio | `slow` | CI nightly + pre-merge |
-| E2E       | `tests/e2e`       | full compose, fake LLM | `e2e` | `make e2e`; CI `e2e` job on every push |
+| E2E       | `tests/e2e`       | full compose, fake LLM | `e2e` | `make e2e`; CI `e2e` job on push to `main` and on pull requests |
 
 ## Fakes (`tests/fakes.py`) — one per [port](../02-use-cases/README.md#ports-defined-in-ecetapplicationports), in-memory
 `FakeClaimRepository`, `FakePolicyRepository`, `FakeTenantRepository`, `FakeReviewTaskRepository`,

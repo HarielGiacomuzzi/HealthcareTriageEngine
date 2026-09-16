@@ -79,14 +79,14 @@ Specs: [observability](05-platform/observability.md), [config](05-platform/confi
 
 ## Phase 7 — Polish & E2E
 Plan: [`docs/plans/2026-09-16-phase-7-polish-e2e.md`](../docs/plans/2026-09-16-phase-7-polish-e2e.md).
-- `tests/e2e/` drives the compose stack from outside — a real `put_object` into MinIO, the signed webhook read back from the mock client, a review resolved through `/v1/reviews/{id}/resolve` ending in `decided_by=human`, ADR-002's deterministic reject with no worker activity, ADR-005's `NO_POLICIES`, one `request_id` across both processes' logs, both `/metrics` endpoints, and `assert_no_pii` over every service's logs. `make e2e` runs it; the CI `e2e` job runs it on every push. The E2E suite caught a publish-before-commit race, fixed in UC-06 (`ClaimNotYetQueued` hold + requeue); `minio-setup` is idempotent on an existing volume; `make demo` polls minio-setup's exit state and drops a fourth note (deterministic reject).
+- `tests/e2e/` drives the compose stack from outside — a real `put_object` into MinIO, the signed webhook read back from the mock client, a review resolved through `/v1/reviews/{id}/resolve` ending in `decided_by=human`, ADR-002's deterministic reject with no worker activity, ADR-005's `NO_POLICIES`, one `request_id` across both processes' logs, both `/metrics` endpoints, and `assert_no_pii` over every service's logs. `make e2e` runs it; the CI `e2e` job runs it on push to `main` and on pull requests. The E2E suite caught a publish-before-commit race, fixed in UC-06 (`ClaimNotYetQueued` hold + requeue); `minio-setup` is idempotent on an existing volume; `make demo` polls minio-setup's exit state and drops a fourth note (deterministic reject).
 - The `observability` compose profile: Prometheus scraping `api:8000` and `worker:9100`, Grafana with a provisioned "ECET" dashboard (ingest p95, LLM calls avoided, route split, claims by status, open reviews). `make observability`.
 - `en_core_web_lg` pinned to 3.8.0 in the Dockerfile, Makefile and CI (a test keeps them agreeing); the CI `slow` job caches the wheel by version. The runtime image check follows the `SPACY_MODEL` build arg.
 - README rewrite: measured quickstart, workflow and integration diagrams, the ADR table, measured ADR-002 savings, API and ops guide, and the v1 limitations (static key, mock-client freshness, `make clean` after a topology change, image size, `make spacy-model`).
 - `failure_reason` is `no_text` for blank extracted text and `no_policies` for `NO_POLICIES`; `handle_unmapped` logs the path's `claim_id`; `/readyz` with no probes is 503; `build_container` releases what it opened when a later step fails.
 - The test gaps from Phases 3–5: every UC-01 write asserted PII-free, duplicates in non-`QUEUED` statuses and before the tenant lookup, the bare-surname redaction, `head()` on a missing bucket, the 5-page <200 ms extraction budget, a genuinely behind-head and an unstamped database, the queue's reconnect-aware health check, and the consumer's drain and drain timeout.
 - Deviations from the plan: [Carried over from Phase 7](#carried-over-from-phase-7).
-Done when: README quickstart reproduces the demo from a clean clone (measured, see README §4); `pytest -m e2e` is green in CI.
+Done when: README quickstart reproduces the demo from a clean clone (measured 2 min 16 s, see README §4); the CI `e2e` job is added and runs `pytest -m e2e` on push to `main` and on pull requests — its first green run, on the Phase 7 PR, is the merge gate.
 Specs: [testing](05-platform/testing.md), [docker-compose](05-platform/docker-compose.md), [observability](05-platform/observability.md).
 
 ## Carried over from Phase 0
@@ -110,7 +110,7 @@ Every deferral recorded in [`docs/plans/2026-09-04-phase-0-skeleton-tooling.md`]
 | 12 | uvicorn stdlib log records bypass the structlog `drop_sensitive_fields` guard (ADR-001) | Phase 6 — closed |
 | — | Alembic, seeds, `ecet seed`, `ecet dlq-replay` | Phases 2 / 5 |
 | — | testcontainers + CI `slow` job | Phase 2 |
-| — | CI `e2e` job | Phase 7 — closed |
+| — | CI `e2e` job | Phase 7 — added, runs on push to `main` and on pull requests; not yet run on GitHub — first green run on the Phase 7 PR is the merge gate |
 | — | `tests/fakes.py`, `assert_no_pii`, `tests/fixtures/` from the [testing spec](05-platform/testing.md) | Phase 1 (repository fakes) / Phase 3 (the rest) |
 
 ## Carried over from Phase 1

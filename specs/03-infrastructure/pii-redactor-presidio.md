@@ -12,7 +12,7 @@ Module: `ecet/infrastructure/pii/presidio_redactor.py`. Implements `PiiRedactor`
 - Returns `RedactedText(text, entity_counts, redactor="presidio-2.2")`.
 
 ## Dockerfile impact
-- `pip install presidio-analyzer==2.2.* presidio-anonymizer==2.2.*` + `python -m spacy download en_core_web_lg` in build stage. Image ~1.5 GB; acceptable, note in README.
+- `pip install presidio-analyzer==2.2.* presidio-anonymizer==2.2.*` + `python -m spacy download en_core_web_lg-3.8.0 --direct` (pinned) in build stage. Image measured 1.71 GB; acceptable, note in README.
 
 ## Metrics
 - `pii_redaction_seconds` histogram, `pii_entities_total{entity}` counter.
