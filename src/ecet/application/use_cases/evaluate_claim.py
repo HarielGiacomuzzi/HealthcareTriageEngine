@@ -25,9 +25,9 @@ every write. A crash between the two leaves the claim `QUEUED` and the message
 unacked, so RabbitMQ redelivers it — the same at-least-once contract Phase 4 already
 documents.
 
-The tenant is read in that first, read-only unit of work too — `_tenant` runs for
-every message, including a `HUMAN_REVIEW` route that never delivers, because the
-route isn't known until the vendor answers and the tenant row has to be read before
+The tenant is read in that first, read-only unit of work too — `tenant_for_delivery`
+runs for every message, including a `HUMAN_REVIEW` route that never delivers, because
+the route isn't known until the vendor answers and the tenant row has to be read before
 that connection closes. That means the snapshot used for the webhook URL and HMAC
 secret can be up to `llm_timeout_s` stale by the time the POST goes out: a tenant
 deactivated, or with a rotated secret, during the vendor call is delivered against
@@ -53,12 +53,16 @@ from ecet.application.ports.llm_gateway import EvaluationRequest, LLMGateway
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.ports.webhook_client import WebhookClient
 from ecet.application.use_cases.human_review import RequestHumanReview
-from ecet.application.use_cases.notify_client import Delivery, NotifyClient, tenant_inactive
+from ecet.application.use_cases.notify_client import (
+    Delivery,
+    NotifyClient,
+    tenant_for_delivery,
+    tenant_inactive,
+)
 from ecet.application.use_cases.route_decision import RouteDecision
 from ecet.domain.claim import Claim, ClaimStatus
 from ecet.domain.errors import ClaimNotFound, TenantNotFound
 from ecet.domain.evaluation import ReviewReason, Route
-from ecet.domain.tenant import Tenant
 
 log = structlog.get_logger(__name__)
 
@@ -94,7 +98,7 @@ class EvaluateClaim:
                 claim = await self._load(uow, message)
                 if claim is None:
                     return
-                tenant_or_error = await self._tenant(uow, claim)
+                tenant_or_error = await tenant_for_delivery(uow.tenants, claim.tenant_id)
                 request = await self._build_request(uow, claim, message)
         except ClaimNotYetQueued:
             # Held with no connection open, so the redelivery reads the api's commit.
@@ -194,17 +198,6 @@ class EvaluateClaim:
             )
             return None
         return claim
-
-    async def _tenant(self, uow: UnitOfWork, claim: Claim) -> Tenant | TenantNotFound:
-        """Read before the transaction closes, because the delivery happens after it.
-        A tenant deactivated since ingestion is not an error here — it is a delivery
-        that will never happen, and the claim parks under `tenant_inactive`. Returned
-        as one value rather than an `(ok, error)` pair so the caller narrows with
-        `isinstance` instead of an `assert`."""
-        try:
-            return await uow.tenants.get(claim.tenant_id)
-        except TenantNotFound as error:
-            return error
 
     async def _current_status(self, uow: UnitOfWork, message: EvaluationMessage) -> str:
         """Only for the `evaluate.delivery_discarded` log line: the claim guard already

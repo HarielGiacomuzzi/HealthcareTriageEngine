@@ -31,7 +31,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from ecet.application.ports.clock import Clock
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.ports.webhook_client import WebhookClient
-from ecet.application.use_cases.notify_client import NotifyClient, tenant_inactive
+from ecet.application.use_cases.notify_client import (
+    NotifyClient,
+    tenant_for_delivery,
+    tenant_inactive,
+)
 from ecet.domain.claim import Claim, ClaimStatus
 from ecet.domain.errors import (
     InvalidTransition,
@@ -49,7 +53,6 @@ from ecet.domain.evaluation import (
 )
 from ecet.domain.ids import ClaimId, TenantId, TenantIdField
 from ecet.domain.ports.review_task_repository import ReviewTaskRepository
-from ecet.domain.tenant import Tenant
 
 log = structlog.get_logger(__name__)
 
@@ -171,7 +174,7 @@ class ResolveReview:
                 raise InvalidTransition(
                     f"claim {claim.id} is {claim.status}, which a review cannot resolve"
                 )
-            tenant_or_error = await self._tenant(uow, claim)
+            tenant_or_error = await tenant_for_delivery(uow.tenants, claim.tenant_id)
 
         # Outside the transaction: one attempt, no in-request backoff, and no pooled
         # connection held for it (`retry-notify` is the operator's retry).
@@ -238,14 +241,3 @@ class ResolveReview:
             claim_status=claim.status.value,
         )
         return ResolveReviewResult(task_id=task.id, claim_id=claim.id, claim_status=claim.status)
-
-    async def _tenant(self, uow: UnitOfWork, claim: Claim) -> Tenant | TenantNotFound:
-        """Read before the transaction closes, because the delivery happens after it.
-        A tenant deactivated since the review was requested is not an error here — it
-        is a delivery that will never happen, and the claim parks under
-        `tenant_inactive`. Returned as one value rather than an `(ok, error)` pair so
-        the caller narrows with `isinstance` instead of an `assert`."""
-        try:
-            return await uow.tenants.get(claim.tenant_id)
-        except TenantNotFound as error:
-            return error
