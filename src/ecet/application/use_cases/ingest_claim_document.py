@@ -114,7 +114,6 @@ class IngestClaimDocument:
         source.ensure_size_within(self._max_pdf_bytes)
         tenant_id = source.tenant_id()
 
-        claim: Claim | None = None
         republish: Sequence[Policy] | None = None
         async with self._uow_factory() as uow:
             duplicate = await uow.claims.find_by_source(source.bucket, source.key, source.etag)
@@ -136,12 +135,8 @@ class IngestClaimDocument:
                 await uow.claims.add(claim)
                 await uow.commit()
 
-        if duplicate is None and claim is not None:
-            return await self._run_pipeline(claim)
         if duplicate is None:
-            # Unreachable: the `else` branch above always sets `claim` when
-            # `duplicate` is None. Narrows `duplicate` for mypy without `assert`.
-            raise AssertionError("unreachable: duplicate is None but claim was not set")
+            return await self._run_pipeline(claim)
 
         status = duplicate.status
         if republish is not None:
