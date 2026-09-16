@@ -1,7 +1,10 @@
+import json
+
 import httpx
 import pytest
 import structlog
 from fastapi import FastAPI
+from tests.pii import assert_no_pii
 
 from ecet.application.errors import ExtractionFailed, QueuePublishError
 from ecet.domain.errors import (
@@ -106,3 +109,4 @@ async def test_an_unhandled_error_logs_the_claim_id_from_the_path() -> None:
     (entry,) = [e for e in captured if e["event"] == "api.unhandled_error"]
     assert entry["claim_id"] == "c-123"
     assert "c-123" not in response.text
+    assert_no_pii(json.dumps(captured, default=str))
