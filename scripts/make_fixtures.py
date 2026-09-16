@@ -53,6 +53,14 @@ def build_all(destination: Path) -> dict[str, Path]:
     target.save()
     built["note_unclear"] = unclear
 
+    # ADR-002's demo: Z00.00 is excluded by tenant-a's MRI policy, so the deterministic
+    # checks reject it and the LLM is never called.
+    excluded = destination / "note_excluded_code.pdf"
+    target = canvas.Canvas(str(excluded), pagesize=LETTER)
+    _write_lines(target, _note_lines("excluded_code"))
+    target.save()
+    built["note_excluded_code"] = excluded
+
     multipage = destination / "note_multipage.pdf"
     target = canvas.Canvas(str(multipage), pagesize=LETTER)
     for note in ("meets", "does_not_meet", "unclear"):

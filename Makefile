@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model drop demo dlq-replay
+.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model drop demo dlq-replay e2e
 
 install:
 	uv sync
@@ -68,6 +68,11 @@ spacy-model:
 drop: fixtures
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf $(or $(TENANT),tenant-a)
 
+# The E2E suite against the compose stack. `up` is a no-op when the stack is already
+# running; the suite itself waits for /readyz and for minio-setup to finish.
+e2e: fixtures up
+	uv run pytest -m e2e
+
 # Move dead-lettered evaluations back onto claims.evaluate — the recovery for a claim a
 # vendor 429 dead-lettered (requeue has no delay, so five deliveries go in milliseconds).
 dlq-replay: .env
@@ -94,6 +99,7 @@ demo: fixtures up
 	@curl -sf -X DELETE localhost:8081/received >/dev/null
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf tenant-a
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_unclear.pdf tenant-a
+	./scripts/demo_drop.sh tests/fixtures/pdfs/note_excluded_code.pdf tenant-a
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf tenant-empty || true
 	@sleep 5
 	docker compose logs --since 60s worker

@@ -78,3 +78,34 @@ jobs:
 
       - name: Full suite with adapters (testcontainers)
         run: uv run pytest -m 'not e2e' --cov=ecet --cov-report=term-missing --cov-fail-under=85
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      # `make up` copies .env.example to .env and builds the image uncached; the
+      # spaCy model download inside the build dominates this job's runtime.
+      - name: Start the stack
+        run: make fixtures up
+
+      - name: E2E suite
+        run: uv run pytest -m e2e
+
+      - name: Service logs
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v
