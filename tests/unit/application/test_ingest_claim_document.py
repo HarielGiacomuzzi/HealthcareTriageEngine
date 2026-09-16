@@ -331,6 +331,8 @@ async def test_the_same_object_arriving_again_re_publishes_a_claim_stuck_before_
     assert [policy.id for policy in message.policies] == stored.policy_ids
     assert harness.extractor.calls == 1  # nothing before the publish is redone
     assert_no_pii(message.model_dump_json())
+    # first ingest: insert + POLICIES_ATTACHED; re-publish: QUEUED write
+    assert harness.uow.commits == 3
 
 
 async def test_a_re_publish_that_fails_again_leaves_the_claim_policies_attached() -> None:
