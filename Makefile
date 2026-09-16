@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model drop demo dlq-replay e2e
+.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model drop demo dlq-replay e2e observability
 
 install:
 	uv sync
@@ -54,6 +54,10 @@ logs: .env
 
 ps: .env
 	docker compose ps
+
+# The stack plus Prometheus (localhost:9090) and Grafana (localhost:3000, dashboard "ECET").
+observability: .env
+	docker compose --profile observability up --build -d
 
 fixtures:
 	uv run python scripts/make_fixtures.py
