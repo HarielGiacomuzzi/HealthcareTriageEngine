@@ -22,8 +22,9 @@ from ecet.application.ports.webhook_client import WebhookClient
 from ecet.application.use_cases.notify_client import NotifyClient, tenant_inactive
 from ecet.domain.claim import Claim, ClaimStatus
 from ecet.domain.errors import InvalidTransition, TenantNotFound
-from ecet.domain.evaluation import Decision
+from ecet.domain.evaluation import Decision, ReviewTask
 from ecet.domain.ids import ClaimId
+from ecet.domain.tenant import Tenant
 
 log = structlog.get_logger(__name__)
 
@@ -41,42 +42,31 @@ class RetryNotify:
         self._clock = clock
 
     async def execute(self, claim_id: ClaimId) -> Claim:
-        async with self._uow_factory() as uow:
+        async with self._uow_factory() as uow:  # read-only: validates and decides
             claim = await uow.claims.get(claim_id)
             if claim.status is not ClaimStatus.NOTIFY_FAILED:
                 raise InvalidTransition(f"claim {claim.id} is {claim.status}, not NOTIFY_FAILED")
-
             task = await uow.review_tasks.find_by_claim(claim.id)
-            evaluation = claim.evaluation
-            outcome: Decision
-            confidence: float
-            decided_by: DecidedBy
-            target: ClaimStatus
-            if task is not None and task.resolution is not None:
-                outcome = task.resolution
-                confidence = 1.0
-                decided_by = "human"
-                target = ClaimStatus.REVIEW_RESOLVED
-            elif task is None and evaluation is not None:
-                outcome = evaluation.decision
-                confidence = evaluation.confidence
-                decided_by = "auto"
-                target = ClaimStatus.APPROVED_AUTO
-            else:
-                # Not reachable through the use cases — NOTIFY_FAILED is only ever
-                # entered once a decision exists. Refusing beats inventing an outcome.
-                raise InvalidTransition(f"claim {claim.id} has no decision to deliver")
+            outcome, confidence, decided_by, target = self._decision(claim, task)
+            tenant_or_error = await self._tenant(uow, claim)
 
-            try:
-                tenant = await uow.tenants.get(claim.tenant_id)
-            except TenantNotFound as error:
-                delivery = tenant_inactive(error)
-            else:
-                delivery = await NotifyClient(self._webhook, self._clock).attempt(
-                    claim, tenant, outcome=outcome, confidence=confidence, decided_by=decided_by
-                )
-            delivery.apply_to(claim)
+        # Outside the transaction: one attempt, no in-request backoff, and no pooled
+        # connection held for it (this use case is itself the operator's retry).
+        if isinstance(tenant_or_error, TenantNotFound):
+            delivery = tenant_inactive(tenant_or_error)
+        else:
+            delivery = await NotifyClient(self._webhook, self._clock).attempt(
+                claim,
+                tenant_or_error,
+                outcome=outcome,
+                confidence=confidence,
+                decided_by=decided_by,
+            )
+
+        async with self._uow_factory() as uow:  # the write
+            claim = await uow.claims.get(claim_id)
             now = self._clock.now()
+            delivery.apply_to(claim)
             if delivery.succeeded:
                 claim.transition(target, now=now)
             else:
@@ -96,3 +86,25 @@ class RetryNotify:
             attempts=claim.notification_attempts,
         )
         return claim
+
+    @staticmethod
+    def _decision(
+        claim: Claim, task: ReviewTask | None
+    ) -> tuple[Decision, float, DecidedBy, ClaimStatus]:
+        evaluation = claim.evaluation
+        if task is not None and task.resolution is not None:
+            return task.resolution, 1.0, "human", ClaimStatus.REVIEW_RESOLVED
+        if task is None and evaluation is not None:
+            return evaluation.decision, evaluation.confidence, "auto", ClaimStatus.APPROVED_AUTO
+        # Not reachable through the use cases — NOTIFY_FAILED is only ever entered
+        # once a decision exists. Refusing beats inventing an outcome.
+        raise InvalidTransition(f"claim {claim.id} has no decision to deliver")
+
+    async def _tenant(self, uow: UnitOfWork, claim: Claim) -> Tenant | TenantNotFound:
+        """Read before the transaction closes, because the delivery happens after it.
+        Returned as one value rather than an `(ok, error)` pair so the caller narrows
+        with `isinstance` instead of an `assert`."""
+        try:
+            return await uow.tenants.get(claim.tenant_id)
+        except TenantNotFound as error:
+            return error

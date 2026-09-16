@@ -9,12 +9,14 @@ import pytest
 from tests.fakes import FakeUnitOfWork, FakeWebhookClient, FixedClock
 from tests.pii import assert_no_pii
 
-from ecet.application.errors import WebhookPermanentError
+from ecet.application.errors import WebhookPermanentError, WebhookTransientError
+from ecet.application.use_cases.notify_client import UNREACHABLE
 from ecet.application.use_cases.retry_notify import RetryNotify
 from ecet.domain.claim import Claim, ClaimStatus, RedactedText, SourceObject
 from ecet.domain.errors import ClaimNotFound, InvalidTransition
 from ecet.domain.evaluation import Decision, Evaluation, ReviewReason, ReviewTask
-from ecet.domain.ids import ClaimId
+from ecet.domain.ids import ClaimId, PolicyId
+from ecet.domain.policy import Icd10Code
 from ecet.domain.tenant import Tenant
 
 NOW = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
@@ -43,7 +45,10 @@ def build_claim(**overrides: Any) -> Claim:
         "evaluation": Evaluation(
             decision=Decision.MEETS_NECESSITY,
             confidence=0.91,
+            matched_policy_id=PolicyId(uuid4()),
+            cited_codes=[Icd10Code(code="M54.5")],
             rationale="Conservative therapy documented.",
+            evidence_missing=[],
             model="fake-deterministic",
             prompt_version="v1",
         ),
@@ -67,6 +72,16 @@ async def build_case(
     return retry, uow, webhook
 
 
+def build_retry(uow: FakeUnitOfWork, *, webhook: FakeWebhookClient) -> RetryNotify:
+    return RetryNotify(uow_factory=lambda: uow, webhook=webhook, clock=FixedClock(LATER))
+
+
+async def seed_notify_failed_claim(uow: FakeUnitOfWork) -> Claim:
+    claim = build_claim()
+    await uow.claims.add(claim)
+    return claim
+
+
 async def test_an_automatic_decision_is_re_sent_as_auto_and_approves() -> None:
     claim = build_claim()
     retry, uow, webhook = await build_case(claim)
@@ -77,6 +92,14 @@ async def test_an_automatic_decision_is_re_sent_as_auto_and_approves() -> None:
     assert payload.decided_by == "auto"
     assert payload.outcome == "MEETS_NECESSITY"
     assert payload.confidence == 0.91
+    # The claim handed to the webhook must still carry its evaluation after the
+    # first unit of work has closed: a bare re-read would ship a blank rationale.
+    assert claim.evaluation is not None
+    assert payload.rationale == claim.evaluation.rationale
+    assert payload.matched_policy_id == claim.evaluation.matched_policy_id
+    assert payload.cited_codes == ["M54.5"]
+    assert payload.evidence_missing == claim.evaluation.evidence_missing
+    assert payload.source_key == KEY
     stored = uow.claims.claims[claim.id]
     assert stored.status is ClaimStatus.APPROVED_AUTO
     assert stored.failure_reason is None
@@ -106,6 +129,13 @@ async def test_a_human_decision_is_re_sent_as_human_and_resolves() -> None:
     assert payload.decided_by == "human"
     assert payload.outcome == "DOES_NOT_MEET"
     assert payload.confidence == 1.0
+    # The human resolution overrides the outcome, but the payload's supporting
+    # evidence still comes from the claim's own evaluation.
+    assert claim.evaluation is not None
+    assert payload.rationale == claim.evaluation.rationale
+    assert payload.matched_policy_id == claim.evaluation.matched_policy_id
+    assert payload.cited_codes == ["M54.5"]
+    assert payload.source_key == KEY
     assert uow.claims.claims[claim.id].status is ClaimStatus.REVIEW_RESOLVED
     assert_no_pii(payload.model_dump_json())
 
@@ -157,3 +187,45 @@ async def test_a_claim_with_no_decision_is_refused_rather_than_invented() -> Non
         await retry.execute(claim.id)
 
     assert webhook.deliveries == []
+
+
+async def test_the_retry_posts_with_no_transaction_open() -> None:
+    uow = FakeUnitOfWork(tenants=[build_tenant()])
+    webhook = FakeWebhookClient(watch=uow)
+    claim = await seed_notify_failed_claim(uow)
+
+    await build_retry(uow, webhook=webhook).execute(claim.id)
+
+    assert webhook.uow_open_during_call == [False]
+    assert uow.entries == 2
+
+
+async def test_a_second_failure_still_commits_the_attempt_count() -> None:
+    uow = FakeUnitOfWork(tenants=[build_tenant()])
+    webhook = FakeWebhookClient(error=WebhookTransientError("still refused"))
+    claim = await seed_notify_failed_claim(uow)
+
+    result = await build_retry(uow, webhook=webhook).execute(claim.id)
+
+    assert result.status is ClaimStatus.NOTIFY_FAILED
+    stored = await uow.claims.get(claim.id)
+    assert stored.notification_attempts == claim.notification_attempts + 1
+    assert stored.failure_reason == UNREACHABLE
+    assert uow.commits == 1
+
+
+async def test_a_deactivated_tenant_parks_the_claim_without_a_delivery() -> None:
+    inactive_tenant = build_tenant().model_copy(update={"active": False})
+    uow = FakeUnitOfWork(tenants=[inactive_tenant])
+    webhook = FakeWebhookClient()
+    claim = await seed_notify_failed_claim(uow)
+
+    result = await build_retry(uow, webhook=webhook).execute(claim.id)
+
+    stored = uow.claims.claims[claim.id]
+    assert stored.status is ClaimStatus.NOTIFY_FAILED
+    assert stored.failure_reason == "tenant_inactive"
+    assert stored.notification_attempts == claim.notification_attempts  # nothing left the process
+    assert webhook.deliveries == []
+    assert result.status is ClaimStatus.NOTIFY_FAILED
+    assert uow.commits == 1
