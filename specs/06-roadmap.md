@@ -88,7 +88,7 @@ Plan: [`docs/plans/2026-09-16-phase-7-polish-e2e.md`](../docs/plans/2026-09-16-p
 - `IngestClaimDocument` (UC-01) holds no unit of work across the object read, pypdf, spaCy or the publish — read and insert, work with no connection, re-read and write — the ingestion-side twin of Phase 6's external-call move, handed over in PR #8.
 - One `tenant_for_delivery(tenants, tenant_id)` in `notify_client.py` replaces the three `_tenant` copies in UC-06, UC-09c and `retry-notify` (Phase 6 carry-over #8's third caller).
 - Deviations from the plan: [Carried over from Phase 7](#carried-over-from-phase-7).
-Done when: README quickstart reproduces the demo from a clean clone (measured 2 min 16 s, see README §4); the CI `e2e` job is added and runs `pytest -m e2e` on push to `main` and on pull requests — its first green run, on the Phase 7 PR, is the merge gate.
+Done when: README quickstart reproduces the demo from a clean clone (measured 2 min 16 s, see README §4); the CI `e2e` job runs `pytest -m e2e` on push to `main` and on pull requests, and is green on the Phase 7 PR (#9).
 Specs: [testing](05-platform/testing.md), [docker-compose](05-platform/docker-compose.md), [observability](05-platform/observability.md).
 
 ## Carried over from Phase 0
@@ -112,7 +112,7 @@ Every deferral recorded in [`docs/plans/2026-09-04-phase-0-skeleton-tooling.md`]
 | 12 | uvicorn stdlib log records bypass the structlog `drop_sensitive_fields` guard (ADR-001) | Phase 6 — closed |
 | — | Alembic, seeds, `ecet seed`, `ecet dlq-replay` | Phases 2 / 5 |
 | — | testcontainers + CI `slow` job | Phase 2 |
-| — | CI `e2e` job | Phase 7 — added, runs on push to `main` and on pull requests; not yet run on GitHub — first green run on the Phase 7 PR is the merge gate |
+| — | CI `e2e` job | Phase 7 — closed (runs on push to `main` and on pull requests; green on PR #9) |
 | — | `tests/fakes.py`, `assert_no_pii`, `tests/fixtures/` from the [testing spec](05-platform/testing.md) | Phase 1 (repository fakes) / Phase 3 (the rest) |
 
 ## Carried over from Phase 1
