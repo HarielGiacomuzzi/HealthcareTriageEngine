@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from prometheus_client import REGISTRY
 from tests.fakes import FakeUnitOfWork, FakeWebhookClient, FixedClock
 
 from ecet.application.errors import WebhookPermanentError, WebhookTransientError
@@ -24,6 +25,10 @@ from ecet.domain.tenant import Tenant
 NOW = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
 KEY = "tenants/tenant-a/claims/note-1.pdf"
 THRESHOLD = 0.85
+
+
+def sample(name: str, **labels: str) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
 
 
 def build_tenant() -> Tenant:
@@ -186,3 +191,13 @@ async def test_routing_a_claim_with_no_evaluation_is_a_programming_error() -> No
 
     with pytest.raises(ValueError, match="no evaluation"):
         await route.execute(claim)
+
+
+async def test_the_route_is_counted() -> None:
+    before = sample("ecet_triage_route_total", route="AUTO_NOTIFY")
+    claim = build_claim(confidence=0.90)
+    route, _ = await build_case(claim, FakeWebhookClient())
+
+    await route.execute(claim)
+
+    assert sample("ecet_triage_route_total", route="AUTO_NOTIFY") == before + 1

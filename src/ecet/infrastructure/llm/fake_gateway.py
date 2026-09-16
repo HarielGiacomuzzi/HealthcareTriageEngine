@@ -8,6 +8,7 @@ goes to human review, and a note containing "denied" is refused.
 
 import structlog
 
+from ecet import metrics
 from ecet.application.ports.llm_gateway import EvaluationRequest
 from ecet.domain.evaluation import Decision, Evaluation
 from ecet.domain.ids import PolicyId
@@ -65,6 +66,8 @@ class FakeLlmGateway:
             decision=decision.value,
             confidence=confidence,
         )
+        metrics.LLM_CALLS_TOTAL.labels(provider="fake", model=self.MODEL, outcome="ok").inc()
+        metrics.LLM_LATENCY_SECONDS.labels(provider="fake", model=self.MODEL).observe(0.0)
         return Evaluation(
             decision=decision,
             confidence=confidence,

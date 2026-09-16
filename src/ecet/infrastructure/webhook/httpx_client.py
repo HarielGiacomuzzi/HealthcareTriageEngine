@@ -21,6 +21,7 @@ from uuid import uuid4
 import httpx
 import structlog
 
+from ecet import metrics
 from ecet.application.errors import WebhookPermanentError, WebhookTransientError
 from ecet.application.notifications import ClientNotification
 from ecet.domain.tenant import Tenant
@@ -73,9 +74,11 @@ class HttpxWebhookClient:
             try:
                 response = await self._client.post(url, content=body, headers=headers)
             except httpx.TransportError as error:
+                metrics.WEBHOOK_ATTEMPTS_TOTAL.labels(status_class="error").inc()
                 last = type(error).__name__
             else:
                 status = response.status_code
+                metrics.WEBHOOK_ATTEMPTS_TOTAL.labels(status_class=f"{status // 100}xx").inc()
                 if 200 <= status < 300:
                     log.info(
                         "webhook.delivered",

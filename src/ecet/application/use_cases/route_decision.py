@@ -15,6 +15,7 @@ again — the decision stands, only the delivery failed — so the claim parks i
 
 import structlog
 
+from ecet import metrics
 from ecet.application.ports.clock import Clock
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.ports.webhook_client import WebhookClient
@@ -47,6 +48,7 @@ class RouteDecision:
             raise ValueError(f"claim {claim.id} has no evaluation to route")
 
         route = triage(evaluation, self._threshold)
+        metrics.TRIAGE_ROUTE_TOTAL.labels(route=route.value).inc()
         log.info(
             "claim.routed",
             claim_id=str(claim.id),

@@ -4,11 +4,16 @@ code for the demo, not a test double — hence a real test of its rule table."""
 from uuid import uuid4
 
 import pytest
+from prometheus_client import REGISTRY
 from tests.fakes import build_evaluation_request
 
 from ecet.domain.evaluation import Decision
 from ecet.domain.ids import PolicyId
 from ecet.infrastructure.llm.fake_gateway import FakeLlmGateway
+
+
+def sample(name: str, **labels: str) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
 
 
 @pytest.mark.parametrize(
@@ -57,3 +62,18 @@ async def test_the_vendor_metadata_is_filled_in() -> None:
     assert evaluation.model == FakeLlmGateway.MODEL
     assert evaluation.prompt_version == request.prompt_version
     assert [code.code for code in evaluation.cited_codes] == request.found_codes
+
+
+async def test_the_fake_gateway_counts_itself_as_a_call() -> None:
+    """The compose default is the fake, and a demo with an empty `ecet_llm_calls_total`
+    reads as a broken pipeline."""
+    before = sample(
+        "ecet_llm_calls_total", provider="fake", model="fake-deterministic", outcome="ok"
+    )
+
+    await FakeLlmGateway().evaluate(build_evaluation_request())
+
+    assert (
+        sample("ecet_llm_calls_total", provider="fake", model="fake-deterministic", outcome="ok")
+        == before + 1
+    )
