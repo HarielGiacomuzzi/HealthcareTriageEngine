@@ -3,7 +3,8 @@
 The contract with the consumer is expressed by control flow, not by a return value:
 **raising means requeue, returning means ack.** Every branch that a retry could not
 improve — an unknown claim, a claim already past `QUEUED`, a vendor answer that will
-be identical next time — returns. Only a transient vendor failure escapes.
+be identical next time — returns. Only a transient vendor failure, or a claim whose
+`QUEUED` commit has not landed yet, escapes.
 
 The message is the source of truth for what the model sees. Policies travel as a
 snapshot taken at enqueue time (UC-05), so a policy edited while the message sat in
@@ -35,11 +36,17 @@ only narrow that window, not close it (the POST itself still has to run outside 
 transaction), so it isn't done — this paragraph is the fix.
 """
 
+import asyncio
 from collections.abc import Callable
 
 import structlog
 
-from ecet.application.errors import LLMInvalidOutput, LLMPermanentError, LLMTransientError
+from ecet.application.errors import (
+    ClaimNotYetQueued,
+    LLMInvalidOutput,
+    LLMPermanentError,
+    LLMTransientError,
+)
 from ecet.application.messages import EvaluationMessage
 from ecet.application.ports.clock import Clock
 from ecet.application.ports.llm_gateway import EvaluationRequest, LLMGateway
@@ -57,6 +64,10 @@ log = structlog.get_logger(__name__)
 
 INVALID_OUTPUT = "llm_invalid_output"
 PERMANENT_ERROR = "llm_permanent_error"
+
+#: How long a message that beat UC-01's `QUEUED` commit is held before it is requeued.
+#: Requeue has no delay, so without this five deliveries could all land inside the gap.
+NOT_YET_QUEUED_DELAY_S = 0.5
 
 
 class EvaluateClaim:
@@ -78,12 +89,17 @@ class EvaluateClaim:
         self._router = RouteDecision(clock=clock, threshold=threshold)
 
     async def execute(self, message: EvaluationMessage) -> None:
-        async with self._uow_factory() as uow:  # read-only: nothing is written here
-            claim = await self._load(uow, message)
-            if claim is None:
-                return
-            tenant_or_error = await self._tenant(uow, claim)
-            request = await self._build_request(uow, claim, message)
+        try:
+            async with self._uow_factory() as uow:  # read-only: nothing is written here
+                claim = await self._load(uow, message)
+                if claim is None:
+                    return
+                tenant_or_error = await self._tenant(uow, claim)
+                request = await self._build_request(uow, claim, message)
+        except ClaimNotYetQueued:
+            # Held with no connection open, so the redelivery reads the api's commit.
+            await asyncio.sleep(NOT_YET_QUEUED_DELAY_S)
+            raise
 
         # No connection is held for either of these. The vendor call can take
         # `llm_timeout_s` and the POST its own timeout; both used to run inside the
@@ -161,6 +177,13 @@ class EvaluateClaim:
                 message_tenant_id=str(message.tenant_id),
             )
             return None
+
+        if claim.status is ClaimStatus.POLICIES_ATTACHED:
+            # UC-01 publishes before it commits QUEUED; this message beat that commit.
+            log.info(
+                "evaluate.not_yet_queued", claim_id=str(claim.id), tenant_id=str(claim.tenant_id)
+            )
+            raise ClaimNotYetQueued("not_yet_queued")
 
         if claim.status is not ClaimStatus.QUEUED:
             log.info(

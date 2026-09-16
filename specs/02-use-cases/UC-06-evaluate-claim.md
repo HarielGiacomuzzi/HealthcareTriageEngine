@@ -10,7 +10,8 @@ Worker-side orchestrator. One message → one LLM call → route.
 
 ## Steps
 1. Load claim. Not found → ack + log error (poison message).
-   Status not in `{QUEUED}` → ack, log `skipped_duplicate` (at-least-once delivery; [ADR-006](../00-overview.md#4-adrs)).
+   Status `POLICIES_ATTACHED` → UC-01 published but has not committed `QUEUED` yet: log `not_yet_queued`, wait 0.5 s, raise `ClaimNotYetQueued` (requeue).
+   Any other status not in `{QUEUED}` → ack, log `skipped_duplicate` (at-least-once delivery; [ADR-006](../00-overview.md#4-adrs)).
 2. Build `EvaluationRequest`:
    ```python
    class EvaluationRequest(BaseModel):

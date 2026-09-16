@@ -15,6 +15,7 @@ from tests.fakes import (
 from tests.pii import assert_no_pii
 
 from ecet.application.errors import (
+    ClaimNotYetQueued,
     LLMInvalidOutput,
     LLMPermanentError,
     LLMTransientError,
@@ -250,6 +251,24 @@ async def test_a_redelivered_message_for_an_evaluated_claim_calls_no_gateway() -
     case, uow, claim, llm, webhook = await build_world(claim=claim)
 
     await case.execute(build_message(claim))
+
+    assert llm.requests == []
+    assert webhook.deliveries == []
+    assert uow.claims.saved == []
+
+
+async def test_a_message_that_beats_the_api_s_queued_commit_is_requeued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UC-01 publishes, then commits `QUEUED`. A worker fast enough to read the claim in
+    between sees `POLICIES_ATTACHED`; acking that as a duplicate strands the claim in
+    `QUEUED` with no message left (found by the E2E suite)."""
+    monkeypatch.setattr("ecet.application.use_cases.evaluate_claim.NOT_YET_QUEUED_DELAY_S", 0)
+    claim = build_claim(status=ClaimStatus.POLICIES_ATTACHED)
+    case, uow, claim, llm, webhook = await build_world(claim=claim)
+
+    with pytest.raises(ClaimNotYetQueued):
+        await case.execute(build_message(claim))
 
     assert llm.requests == []
     assert webhook.deliveries == []
