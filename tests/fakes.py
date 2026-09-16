@@ -21,6 +21,7 @@ from ecet.domain.claim import Claim, ClaimStatus, RedactedText
 from ecet.domain.errors import (
     ClaimNotFound,
     ConcurrentModification,
+    ReviewAlreadyResolved,
     ReviewTaskNotFound,
     TenantNotFound,
 )
@@ -128,11 +129,17 @@ class FakeReviewTaskRepository:
         self.tasks: dict[UUID, ReviewTask] = {}
 
     async def add(self, task: ReviewTask) -> None:
-        self.tasks[task.id] = task
+        """A copy, like `get`: the caller's object and the stored one must not share
+        identity, or mutating the caller's copy in place would silently rewrite the
+        "stored" row without going through `save` and its OPEN guard."""
+        self.tasks[task.id] = task.model_copy()
 
     async def get(self, task_id: UUID) -> ReviewTask:
+        """A copy, not the stored reference: mirrors the real adapter building a fresh
+        domain object from the row on every read, so `resolve()` on the result cannot
+        silently mutate the store out from under a concurrent `save`."""
         try:
-            return self.tasks[task_id]
+            return self.tasks[task_id].model_copy()
         except KeyError:
             raise ReviewTaskNotFound(str(task_id)) from None
 
@@ -157,6 +164,16 @@ class FakeReviewTaskRepository:
         ][:limit]
 
     async def save(self, task: ReviewTask) -> None:
+        """Mirrors `PostgresReviewTaskRepository.save`: a `RESOLVED` save additionally
+        requires the stored task to still be `OPEN`, so the fake can catch the same
+        race the real adapter's `WHERE status = OPEN` guard catches — the winner's
+        commit landing between this request's `get` and its `save`."""
+        if task.status is ReviewStatus.RESOLVED:
+            stored = self.tasks.get(task.id)
+            if stored is None:
+                raise ReviewTaskNotFound(str(task.id))
+            if stored.status is not ReviewStatus.OPEN:
+                raise ReviewAlreadyResolved(str(task.id))
         self.tasks[task.id] = task
 
     async def count_open_by_tenant(self) -> dict[TenantId, int]:

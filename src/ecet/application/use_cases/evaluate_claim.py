@@ -132,11 +132,12 @@ class EvaluateClaim:
                         claim_id=str(message.claim_id),
                         tenant_id=str(message.tenant_id),
                         status=await self._current_status(uow, message),
+                        delivery_attempted=delivery.attempted,
+                        delivery_succeeded=delivery.succeeded,
                     )
                 return
             fresh.evaluation = evaluation
             self._advance(fresh, ClaimStatus.EVALUATED)
-            await uow.claims.save(fresh)
             if delivery is not None:
                 delivery.apply_to(fresh)
             await self._router.apply(uow, fresh, route=route, delivery=delivery)

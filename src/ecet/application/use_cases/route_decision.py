@@ -59,8 +59,11 @@ class RouteDecision:
             # `AUTO_NOTIFY` always produces a `Delivery` (real or `tenant_inactive`), and
             # `succeeded` is `failure_reason is None`, so the `else` branch always has
             # both. A caller that violates that is a programming error, not a claim to
-            # quietly park.
-            assert delivery is not None and delivery.failure_reason is not None
+            # quietly park — raised rather than asserted so it still fails loudly under
+            # `python -O`, which would otherwise strip the check and stamp
+            # `failure_reason=None` onto a NOTIFY_FAILED claim.
+            if delivery is None or delivery.failure_reason is None:
+                raise RuntimeError("AUTO_NOTIFY reached apply() without a failed delivery")
             self._fail(claim, delivery.failure_reason)
         await uow.claims.save(claim)
 

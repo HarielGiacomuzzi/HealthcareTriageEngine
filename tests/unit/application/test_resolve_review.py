@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import structlog.testing
-from tests.fakes import FakeUnitOfWork, FakeWebhookClient, FixedClock
+from tests.fakes import FakeReviewTaskRepository, FakeUnitOfWork, FakeWebhookClient, FixedClock
 from tests.pii import assert_no_pii
 
 from ecet.application.errors import WebhookTransientError
@@ -200,6 +200,7 @@ async def test_resolving_twice_is_an_error_and_notifies_once() -> None:
 async def test_an_already_resolved_task_is_refused_before_anything_is_sent() -> None:
     case = await build_case()
     case.task.status = ReviewStatus.RESOLVED
+    await case.uow.review_tasks.save(case.task)
 
     with pytest.raises(ReviewAlreadyResolved):
         await case.use_case.execute(case.command())
@@ -235,6 +236,49 @@ async def test_a_task_resolved_mid_delivery_is_logged_and_refused() -> None:
 
     # The winner's decision stands; this request's does not, but its webhook already
     # reached the client, so the loss is logged rather than swallowed into a false 200.
+    assert case.stored_task().reviewer == "dr.diallo"
+    assert len(case.webhook.deliveries) == 1
+    assert case.uow.commits == 0
+    assert any(entry.get("event") == "review.resolve_lost_race" for entry in captured)
+
+
+async def test_a_task_resolved_at_save_time_is_logged_and_refused() -> None:
+    """The other lost-race window: the winner's commit lands in the store between this
+    request's re-read (still OPEN) and its own `save` — the repository's `WHERE status
+    = OPEN` guard catches it, not `task.resolve()` in memory."""
+    case = await build_case()
+
+    class RaceAtSave(FakeReviewTaskRepository):
+        """First `get` (the read-only pre-check) passes through untouched; the second
+        `get` (the write block's re-read) is where the winner's commit lands, right
+        after this request reads the still-OPEN row."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._calls = 0
+
+        async def get(self, task_id: UUID) -> ReviewTask:
+            task = await super().get(task_id)
+            self._calls += 1
+            if self._calls == 2:
+                winner = self.tasks[task_id].model_copy()
+                winner.resolve(
+                    resolution="MEETS_NECESSITY", reviewer="dr.diallo", notes=None, now=NOW
+                )
+                self.tasks[task_id] = winner
+            return task
+
+    case.uow.review_tasks = RaceAtSave()
+    case.uow.review_tasks.tasks[case.task.id] = case.task
+    case.use_case = ResolveReview(
+        uow_factory=lambda: case.uow, webhook=case.webhook, clock=FixedClock(NOW)
+    )
+
+    with structlog.testing.capture_logs() as captured, pytest.raises(ReviewAlreadyResolved):
+        await case.use_case.execute(case.command())
+
+    # The winner's decision stands; this request's webhook already reached the client
+    # (one delivery happened), so the loss is logged rather than swallowed.
     assert case.stored_task().reviewer == "dr.diallo"
     assert len(case.webhook.deliveries) == 1
     assert case.uow.commits == 0

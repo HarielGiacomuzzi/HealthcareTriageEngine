@@ -191,15 +191,19 @@ class ResolveReview:
             task = await uow.review_tasks.get(command.task_id)
             try:
                 # Raises `ReviewAlreadyResolved` if another request resolved the task
-                # while the POST above was in flight. That request's decision stands;
-                # this one's does not, but its webhook already reached the client, so
-                # the loss is logged rather than swallowed silently.
+                # while the POST above was in flight — either in memory here (this
+                # re-read already shows RESOLVED) or at `save`, where the repository's
+                # `WHERE status = OPEN` guard catches the narrower window: the winner's
+                # transaction commits between this re-read and this save. Both must
+                # land in this `except`, or the second window's loss goes unlogged
+                # after its webhook already reached the client.
                 task.resolve(
                     resolution=command.resolution,
                     reviewer=command.reviewer,
                     notes=command.notes,
                     now=now,
                 )
+                await uow.review_tasks.save(task)
             except ReviewAlreadyResolved:
                 log.warning(
                     "review.resolve_lost_race",
@@ -207,10 +211,15 @@ class ResolveReview:
                     claim_id=str(claim.id),
                     tenant_id=str(claim.tenant_id),
                     delivery_attempted=delivery.attempted,
+                    delivery_succeeded=delivery.succeeded,
                 )
                 raise
-            await uow.review_tasks.save(task)
 
+            # The task guard above subsumes a claim-status re-check here: `claim_id` is
+            # unique per open task, and `retry-notify` refuses a claim whose only task
+            # is still OPEN, so nothing else can move a REVIEW_PENDING claim while this
+            # task is open. A future edge into or out of REVIEW_PENDING would break that
+            # and turn this into a bare InvalidTransition with no log line.
             claim = await uow.claims.get(task.claim_id)
             delivery.apply_to(claim)
             if delivery.succeeded:

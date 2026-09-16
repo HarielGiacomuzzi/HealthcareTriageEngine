@@ -103,8 +103,8 @@ class OpenAiLlmGateway:
             output_tokens=usage.completion_tokens if usage else 0,
             known_policy_ids=[policy.id for policy in request.policies],
         )
-        self._count(outcome="ok", model=evaluation.model)
-        metrics.LLM_LATENCY_SECONDS.labels(provider=PROVIDER, model=evaluation.model).observe(
+        self._count(outcome="ok")
+        metrics.LLM_LATENCY_SECONDS.labels(provider=PROVIDER, model=self._model).observe(
             latency_ms / 1000
         )
         metrics.LLM_TOKENS_TOTAL.labels(direction="input").inc(evaluation.input_tokens)
@@ -122,12 +122,13 @@ class OpenAiLlmGateway:
         )
         return evaluation
 
-    def _count(self, *, outcome: str, model: str | None = None) -> None:
-        """The failure paths have no completion to read a model off, so they label the
-        configured one."""
-        metrics.LLM_CALLS_TOTAL.labels(
-            provider=PROVIDER, model=model or self._model, outcome=outcome
-        ).inc()
+    def _count(self, *, outcome: str) -> None:
+        """Always the configured model, not the vendor's `completion.model`: a pinned
+        snapshot name on the success path would split one deployment's `ok` and
+        `transient` outcomes across different label values, and an unbounded vendor
+        string is unbounded label cardinality on a metric meant to stay a small,
+        closed set."""
+        metrics.LLM_CALLS_TOTAL.labels(provider=PROVIDER, model=self._model, outcome=outcome).inc()
 
 
 def _parse(completion: Any) -> EvaluationOutput:
