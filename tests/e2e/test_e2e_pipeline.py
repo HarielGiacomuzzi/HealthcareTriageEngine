@@ -24,6 +24,14 @@ async def _claim_in(claim_id: str, tenant: str, status: str) -> dict[str, object
     return body if body["status"] == status else None
 
 
+async def _worker_metrics_with(*substrings: str) -> str | None:
+    """The worker's counters increment after the mock client stores the delivery, so a
+    single read right after the webhook lands can race. Poll until every substring
+    is present."""
+    text = worker_metrics()
+    return text if all(substring in text for substring in substrings) else None
+
+
 async def test_a_note_that_meets_policy_is_approved_and_delivered_signed() -> None:
     key = await drop("note_simple", "tenant-a")
 
@@ -142,7 +150,14 @@ async def test_both_processes_expose_the_pipeline_metrics() -> None:
     assert 'ecet_ingest_seconds_count{outcome="ingested"}' in api_metrics
     assert "ecet_deterministic_verdict_total" in api_metrics
 
-    worker = worker_metrics()
+    worker = await eventually(
+        lambda: _worker_metrics_with(
+            'ecet_triage_route_total{route="AUTO_NOTIFY"}',
+            "ecet_llm_calls_total",
+            'ecet_webhook_attempts_total{status_class="2xx"}',
+        ),
+        what="the worker's pipeline metrics",
+    )
     assert 'ecet_triage_route_total{route="AUTO_NOTIFY"}' in worker
     assert "ecet_llm_calls_total" in worker
     assert 'ecet_webhook_attempts_total{status_class="2xx"}' in worker
