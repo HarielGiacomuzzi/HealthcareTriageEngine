@@ -158,8 +158,8 @@ class IngestClaimDocument:
 
         try:
             policies: Sequence[Policy] = await attach_policies.execute(claim.tenant_id)
-        except NoPoliciesForTenant as error:
-            await self._fail(uow, claim, ClaimStatus.NO_POLICIES, str(error))
+        except NoPoliciesForTenant:
+            await self._fail(uow, claim, ClaimStatus.NO_POLICIES, "no_policies")
             raise
         claim.policy_ids = [policy.id for policy in policies]
         self._advance(claim, ClaimStatus.POLICIES_ATTACHED)
@@ -203,7 +203,7 @@ class IngestClaimDocument:
             raise ExtractionFailed("object_unavailable") from error
         text = await self._extractor.extract(data)
         if not text.strip():
-            raise ExtractionFailed("empty_text")
+            raise ExtractionFailed("no_text")
         return text
 
     def _advance(self, claim: Claim, status: ClaimStatus) -> None:

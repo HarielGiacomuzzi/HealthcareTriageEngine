@@ -204,7 +204,9 @@ async def test_a_tenant_with_no_policies_persists_no_policies_and_raises() -> No
 
     (stored,) = harness.uow.claims.claims.values()
     assert stored.status is ClaimStatus.NO_POLICIES
-    assert stored.failure_reason == "tenant-a"
+    # A short token, like every other failure_reason — not the tenant slug that
+    # `str(NoPoliciesForTenant)` happens to be.
+    assert stored.failure_reason == "no_policies"
     assert harness.queue.published == []
 
 
@@ -240,7 +242,9 @@ async def test_empty_extracted_text_is_an_extraction_failure() -> None:
 
     (stored,) = harness.uow.claims.claims.values()
     assert stored.status is ClaimStatus.EXTRACTION_FAILED
-    assert stored.failure_reason == "empty_text"
+    # Same condition as pypdf's "no_text" (a scan), so the same token: operators
+    # should not have to know which layer noticed the page was blank.
+    assert stored.failure_reason == "no_text"
 
 
 async def test_a_deterministic_reject_opens_a_review_and_skips_the_queue() -> None:

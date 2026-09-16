@@ -29,7 +29,9 @@ class ObjectNotFound(DomainError):
 class ExtractionFailed(DomainError):
     """No usable text. The message is a short token: `no_text`, `encrypted`,
     `too_many_pages`, `unreadable`, `object_unavailable`. It is persisted verbatim as
-    `Claim.failure_reason`, so it must stay free of client-supplied strings."""
+    `Claim.failure_reason`, so it must stay free of client-supplied strings. `no_text`
+    comes from either the extractor (below its character floor) or UC-01 (only
+    whitespace) — one condition, one token."""
 
 
 class QueuePublishError(DomainError):
