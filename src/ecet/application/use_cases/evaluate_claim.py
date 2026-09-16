@@ -18,10 +18,21 @@ and the seeded catalogue is what keeps those out of the prompt.
 POST used to run inside the same transaction that loaded the claim — a Postgres
 connection idle-in-transaction for up to `llm_timeout_s` plus the webhook's own
 retries (Phase 4 carry-over #11). A read-only unit of work now gathers everything
-those calls need and closes before either runs; a second, later unit of work re-reads
-the claim, re-checks its status, and does every write. A crash between the two leaves
-the claim `QUEUED` and the message unacked, so RabbitMQ redelivers it — the same
-at-least-once contract Phase 4 already documents.
+those calls need — the claim, the tenant, the request — and closes before either
+runs; a second, later unit of work re-reads the claim, re-checks its status, and does
+every write. A crash between the two leaves the claim `QUEUED` and the message
+unacked, so RabbitMQ redelivers it — the same at-least-once contract Phase 4 already
+documents.
+
+The tenant is read in that first, read-only unit of work too — `_tenant` runs for
+every message, including a `HUMAN_REVIEW` route that never delivers, because the
+route isn't known until the vendor answers and the tenant row has to be read before
+that connection closes. That means the snapshot used for the webhook URL and HMAC
+secret can be up to `llm_timeout_s` stale by the time the POST goes out: a tenant
+deactivated, or with a rotated secret, during the vendor call is delivered against
+the row read a minute earlier. Re-reading the tenant in the second unit of work would
+only narrow that window, not close it (the POST itself still has to run outside any
+transaction), so it isn't done — this paragraph is the fix.
 """
 
 from collections.abc import Callable
@@ -71,7 +82,7 @@ class EvaluateClaim:
             claim = await self._load(uow, message)
             if claim is None:
                 return
-            tenant, tenant_error = await self._tenant(uow, claim)
+            tenant_or_error = await self._tenant(uow, claim)
             request = await self._build_request(uow, claim, message)
 
         # No connection is held for either of these. The vendor call can take
@@ -88,16 +99,21 @@ class EvaluateClaim:
             await self._fail(message, error)
             return
 
+        # Assigned on the uow #1 claim, not just `fresh`: `NotifyClient.execute` reads
+        # `claim.evaluation` to build the payload (matched policy, cited codes,
+        # rationale), and that call happens below, before `fresh` exists. The object is
+        # discarded after the POST — the write still lands on `fresh` in uow #2.
+        claim.evaluation = evaluation
+
         route = self._router.decide(claim, evaluation)
         delivery: Delivery | None = None
         if route is Route.AUTO_NOTIFY:
-            if tenant is None:
-                assert tenant_error is not None  # `_tenant` always pairs a `None` tenant with one
-                delivery = tenant_inactive(tenant_error)
+            if isinstance(tenant_or_error, TenantNotFound):
+                delivery = tenant_inactive(tenant_or_error)
             else:
                 delivery = await NotifyClient(self._webhook, self._clock).attempt(
                     claim,
-                    tenant,
+                    tenant_or_error,
                     outcome=evaluation.decision,
                     confidence=evaluation.confidence,
                     decided_by="auto",
@@ -107,7 +123,16 @@ class EvaluateClaim:
             fresh = await self._load(uow, message)
             if fresh is None:
                 # Someone else moved it while the vendor was answering. Their write
-                # stands; ours is thrown away, and the message is still acked.
+                # stands; ours is thrown away, and the message is still acked. If a
+                # delivery already left the process, that fact would otherwise vanish
+                # with no trace in the log or the metrics.
+                if delivery is not None and delivery.attempted:
+                    log.warning(
+                        "evaluate.delivery_discarded",
+                        claim_id=str(message.claim_id),
+                        tenant_id=str(message.tenant_id),
+                        status=await self._current_status(uow, message),
+                    )
                 return
             fresh.evaluation = evaluation
             self._advance(fresh, ClaimStatus.EVALUATED)
@@ -146,16 +171,24 @@ class EvaluateClaim:
             return None
         return claim
 
-    async def _tenant(
-        self, uow: UnitOfWork, claim: Claim
-    ) -> tuple[Tenant | None, TenantNotFound | None]:
+    async def _tenant(self, uow: UnitOfWork, claim: Claim) -> Tenant | TenantNotFound:
         """Read before the transaction closes, because the delivery happens after it.
         A tenant deactivated since ingestion is not an error here — it is a delivery
-        that will never happen, and the claim parks under `tenant_inactive`."""
+        that will never happen, and the claim parks under `tenant_inactive`. Returned
+        as one value rather than an `(ok, error)` pair so the caller narrows with
+        `isinstance` instead of an `assert`."""
         try:
-            return await uow.tenants.get(claim.tenant_id), None
+            return await uow.tenants.get(claim.tenant_id)
         except TenantNotFound as error:
-            return None, error
+            return error
+
+    async def _current_status(self, uow: UnitOfWork, message: EvaluationMessage) -> str:
+        """Only for the `evaluate.delivery_discarded` log line: the claim guard already
+        ran and failed inside `_load`, so this is a second, log-only read."""
+        try:
+            return (await uow.claims.get(message.claim_id)).status.value
+        except ClaimNotFound:
+            return "unknown"
 
     async def _build_request(
         self, uow: UnitOfWork, claim: Claim, message: EvaluationMessage

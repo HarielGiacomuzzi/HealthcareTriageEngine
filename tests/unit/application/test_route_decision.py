@@ -135,24 +135,44 @@ async def test_a_permanent_delivery_failure_sets_notify_failed_with_a_token() ->
     claim = build_claim()
     uow = await build_uow(claim)
     delivery = Delivery(failure_reason="webhook_rejected", error="WebhookPermanentError: 400")
+    delivery.apply_to(claim)  # what the caller (UC-06) does before `apply`
 
     await build_router().apply(uow, claim, route=Route.AUTO_NOTIFY, delivery=delivery)
 
     assert claim.status is ClaimStatus.NOTIFY_FAILED
     assert claim.failure_reason == "webhook_rejected"
+    assert claim.last_notify_error is not None
     assert uow.review_tasks.tasks == {}
     assert uow.claims.saved == [claim.id]
+
+
+async def test_a_transient_delivery_failure_sets_notify_failed_with_its_own_token() -> None:
+    claim = build_claim()
+    uow = await build_uow(claim)
+    delivery = Delivery(
+        failure_reason="webhook_unreachable", error="WebhookTransientError: timeout"
+    )
+    delivery.apply_to(claim)
+
+    await build_router().apply(uow, claim, route=Route.AUTO_NOTIFY, delivery=delivery)
+
+    assert claim.status is ClaimStatus.NOTIFY_FAILED
+    assert claim.failure_reason == "webhook_unreachable"
+    assert claim.last_notify_error is not None
 
 
 async def test_a_tenant_deactivated_before_delivery_parks_the_claim() -> None:
     claim = build_claim()
     uow = await build_uow(claim)
     delivery = tenant_inactive(TenantNotFound("tenant-a"))
+    delivery.apply_to(claim)  # what the caller (UC-06) does before `apply`
 
     await build_router().apply(uow, claim, route=Route.AUTO_NOTIFY, delivery=delivery)
 
     assert claim.status is ClaimStatus.NOTIFY_FAILED
     assert claim.failure_reason == "tenant_inactive"
+    assert claim.last_notify_error is not None
+    assert claim.notification_attempts == 0  # nothing left the process
 
 
 async def test_a_low_confidence_route_opens_a_review_and_ignores_delivery() -> None:

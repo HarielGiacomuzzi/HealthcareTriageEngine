@@ -21,11 +21,6 @@ from ecet.domain.evaluation import Evaluation, ReviewReason, Route, Verdict, tri
 
 log = structlog.get_logger(__name__)
 
-#: Fallback token for `delivery is None` on a route other than `HUMAN_REVIEW` — a
-#: programming error, since `AUTO_NOTIFY` always produces a `Delivery` (real or
-#: `tenant_inactive`), but the `str | None` type still needs a non-`None` reason.
-NO_DELIVERY = "no_delivery"
-
 
 class RouteDecision:
     """UC-07, in two halves, because the delivery between them runs outside the unit of
@@ -61,8 +56,12 @@ class RouteDecision:
         elif delivery is not None and delivery.succeeded:
             self._advance(claim, ClaimStatus.APPROVED_AUTO)
         else:
-            reason = delivery.failure_reason if delivery is not None else NO_DELIVERY
-            self._fail(claim, reason or NO_DELIVERY)
+            # `AUTO_NOTIFY` always produces a `Delivery` (real or `tenant_inactive`), and
+            # `succeeded` is `failure_reason is None`, so the `else` branch always has
+            # both. A caller that violates that is a programming error, not a claim to
+            # quietly park.
+            assert delivery is not None and delivery.failure_reason is not None
+            self._fail(claim, delivery.failure_reason)
         await uow.claims.save(claim)
 
     @staticmethod
