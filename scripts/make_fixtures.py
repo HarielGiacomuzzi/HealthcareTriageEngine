@@ -53,6 +53,14 @@ def build_all(destination: Path) -> dict[str, Path]:
     target.save()
     built["note_unclear"] = unclear
 
+    # ADR-002's demo: Z00.00 is excluded by tenant-a's MRI policy, so the deterministic
+    # checks reject it and the LLM is never called.
+    excluded = destination / "note_excluded_code.pdf"
+    target = canvas.Canvas(str(excluded), pagesize=LETTER)
+    _write_lines(target, _note_lines("excluded_code"))
+    target.save()
+    built["note_excluded_code"] = excluded
+
     multipage = destination / "note_multipage.pdf"
     target = canvas.Canvas(str(multipage), pagesize=LETTER)
     for note in ("meets", "does_not_meet", "unclear"):
@@ -60,6 +68,16 @@ def build_all(destination: Path) -> dict[str, Path]:
         target.showPage()
     target.save()
     built["note_multipage"] = multipage
+
+    # One note per page, all five — the pdf-text-extractor spec's "5-page fixture"
+    # that its <200 ms soft budget is measured against.
+    five_pages = destination / "note_five_pages.pdf"
+    target = canvas.Canvas(str(five_pages), pagesize=LETTER)
+    for note in ("meets", "does_not_meet", "unclear", "excluded_code", "no_codes"):
+        _write_lines(target, _note_lines(note))
+        target.showPage()
+    target.save()
+    built["note_five_pages"] = five_pages
 
     # No text operators at all — the stand-in for a scanned page. OCR is out of scope
     # for v1, so this must fail extraction rather than half-succeed.

@@ -12,6 +12,7 @@ from typing import Any, cast
 
 import pytest
 import structlog
+from structlog.testing import capture_logs
 from tests.pii import assert_no_pii
 from tests.unit.interfaces.test_worker_handler import build_message
 
@@ -110,3 +111,60 @@ async def test_a_delivery_without_a_request_id_binds_no_null() -> None:
     await build_consumer(handle)._on_message(cast(Any, delivery))
 
     assert "request_id" not in seen
+
+
+async def test_stop_waits_for_an_in_flight_delivery_to_settle() -> None:
+    """The SIGTERM story in compose: stop taking deliveries, let the one in hand finish
+    and ack, then close — not close under it."""
+    release = asyncio.Event()
+
+    async def handle(message: EvaluationMessage) -> None:
+        await release.wait()
+
+    consumer = RabbitMqConsumer(
+        "amqp://unused/",
+        prefetch=1,
+        handler=handle,
+        should_requeue=lambda _: True,
+        drain_timeout=5.0,
+    )
+    delivery = _Delivery(build_message().model_dump_json().encode("utf-8"))
+    in_flight = asyncio.create_task(consumer._on_message(cast(Any, delivery)))
+    await asyncio.sleep(0.01)  # into the handler
+
+    stopping = asyncio.create_task(consumer.stop())
+    await asyncio.sleep(0.05)
+    assert not stopping.done(), "stop() returned with a delivery still in flight"
+
+    release.set()
+    await asyncio.wait_for(stopping, timeout=1.0)
+    await in_flight
+
+    assert delivery.settled == ["ack"]
+
+
+async def test_stop_gives_up_on_a_stuck_delivery_after_the_drain_timeout() -> None:
+    async def handle(message: EvaluationMessage) -> None:
+        await asyncio.Event().wait()  # never finishes
+
+    consumer = RabbitMqConsumer(
+        "amqp://unused/",
+        prefetch=1,
+        handler=handle,
+        should_requeue=lambda _: True,
+        drain_timeout=0.05,
+    )
+    delivery = _Delivery(build_message().model_dump_json().encode("utf-8"))
+    in_flight = asyncio.create_task(consumer._on_message(cast(Any, delivery)))
+    await asyncio.sleep(0.01)
+
+    with capture_logs() as captured:
+        await asyncio.wait_for(consumer.stop(), timeout=1.0)
+
+    (timeout_line,) = [e for e in captured if e["event"] == "consumer.drain_timeout"]
+    assert timeout_line["in_flight"] == 1
+    assert delivery.settled == []
+
+    in_flight.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await in_flight

@@ -23,6 +23,7 @@ Binding: `ecet` → `claims.evaluate` key `claims.evaluate`.
 - Handler contract: `async def handle(msg: EvaluationMessage) -> None` ([message schema](../02-use-cases/UC-05-enqueue-evaluation.md#message-contract-applicationmessagespy)).
   - returns → `ack`.
   - raises `TransientError` → `nack(requeue=True)`; quorum `x-delivery-limit` moves to DLQ after 5.
+  - raises `ClaimNotYetQueued` → `nack(requeue=True)` after a 0.5 s hold: the message beat UC-01's `QUEUED` commit ([worker spec](../04-interfaces/worker.md)).
   - raises anything else → `nack(requeue=False)` → DLQ.
 - Body fails `EvaluationMessage.model_validate` → DLQ immediately.
 - Graceful shutdown on SIGTERM: stop consuming, await in-flight, close.

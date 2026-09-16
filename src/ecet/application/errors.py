@@ -9,6 +9,7 @@ they are contract failures of an adapter (`ObjectStorage`, `TextExtractor`,
 from ecet.domain.errors import DomainError
 
 __all__ = [
+    "ClaimNotYetQueued",
     "ExtractionFailed",
     "LLMError",
     "LLMInvalidOutput",
@@ -29,12 +30,21 @@ class ObjectNotFound(DomainError):
 class ExtractionFailed(DomainError):
     """No usable text. The message is a short token: `no_text`, `encrypted`,
     `too_many_pages`, `unreadable`, `object_unavailable`. It is persisted verbatim as
-    `Claim.failure_reason`, so it must stay free of client-supplied strings."""
+    `Claim.failure_reason`, so it must stay free of client-supplied strings. `no_text`
+    comes from either the extractor (below its character floor) or UC-01 (only
+    whitespace) — one condition, one token."""
 
 
 class QueuePublishError(DomainError):
     """The broker did not confirm the publish. UC-01 leaves the claim
     `POLICIES_ATTACHED` so a retry can re-publish it."""
+
+
+class ClaimNotYetQueued(DomainError):
+    """UC-06 read a claim still `POLICIES_ATTACHED`. UC-01 publishes before it commits
+    `QUEUED`, so the message can reach the worker first; the message is requeued until
+    that commit lands (or `x-delivery-limit` dead-letters it, if the api died in the
+    gap)."""
 
 
 class LLMError(DomainError):

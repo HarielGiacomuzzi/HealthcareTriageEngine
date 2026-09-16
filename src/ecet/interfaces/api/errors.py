@@ -134,7 +134,15 @@ def register_error_handlers(app: FastAPI) -> None:
         # handler in Starlette's mro-based lookup, so a 401/404 raised via
         # `HTTPException` is untouched by this — only a truly unhandled exception
         # (a bug) reaches here.
-        log.error("api.unhandled_error", error=type(error).__name__, path=request.url.path)
+        # The router writes `path_params` into the shared scope before the endpoint
+        # runs, so a claim route's id is still readable here. Logged, never returned.
+        claim_id = getattr(error, "claim_id", None) or request.path_params.get("claim_id")
+        log.error(
+            "api.unhandled_error",
+            error=type(error).__name__,
+            path=request.url.path,
+            claim_id=claim_id,
+        )
         return JSONResponse(
             ProblemDetails(
                 type="https://ecet.invalid/problems/Unknown",

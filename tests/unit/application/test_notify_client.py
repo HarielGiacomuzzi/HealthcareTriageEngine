@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from tests.fakes import FakeWebhookClient, FixedClock
+from tests.fakes import FakeTenantRepository, FakeWebhookClient, FixedClock
 from tests.pii import assert_no_pii
 
 from ecet.application.errors import WebhookPermanentError, WebhookTransientError
@@ -16,12 +16,13 @@ from ecet.application.use_cases.notify_client import (
     TENANT_INACTIVE,
     UNREACHABLE,
     NotifyClient,
+    tenant_for_delivery,
     tenant_inactive,
 )
 from ecet.domain.claim import Claim, ClaimStatus, RedactedText, SourceObject
 from ecet.domain.errors import TenantNotFound
 from ecet.domain.evaluation import Decision, Evaluation
-from ecet.domain.ids import ClaimId, PolicyId
+from ecet.domain.ids import ClaimId, PolicyId, TenantId
 from ecet.domain.policy import Icd10Code
 from ecet.domain.tenant import Tenant
 
@@ -30,13 +31,14 @@ KEY = "tenants/tenant-a/claims/note-1.pdf"
 POLICY_ID = PolicyId(uuid4())
 
 
-def build_tenant() -> Tenant:
+def build_tenant(active: bool = True) -> Tenant:
     return Tenant.model_validate(
         {
             "id": "tenant-a",
             "name": "Northwind Health Plan",
             "webhook_url": "http://mock-client:8081/hooks/northwind",
             "webhook_secret": "dev-hmac-tenant-a",
+            "active": active,
         }
     )
 
@@ -266,3 +268,20 @@ async def test_attempt_returns_a_successful_delivery_when_the_webhook_is_deliver
 
     assert delivery.succeeded
     assert len(webhook.deliveries) == 1
+
+
+async def test_tenant_for_delivery_returns_an_active_tenant() -> None:
+    tenant = build_tenant()
+    repository = FakeTenantRepository([tenant])
+
+    assert await tenant_for_delivery(repository, tenant.id) == tenant
+
+
+async def test_tenant_for_delivery_returns_rather_than_raises_for_an_inactive_tenant() -> None:
+    """A tenant deactivated since ingestion is a delivery that will never happen, not an
+    error: the caller parks the claim under `tenant_inactive`."""
+    repository = FakeTenantRepository([build_tenant(active=False)])
+
+    result = await tenant_for_delivery(repository, TenantId("tenant-a"))
+
+    assert isinstance(result, TenantNotFound)

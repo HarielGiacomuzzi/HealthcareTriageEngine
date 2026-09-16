@@ -42,6 +42,9 @@ class FakeClaimRepository:
     def __init__(self) -> None:
         self.claims: dict[ClaimId, Claim] = {}
         self.saved: list[ClaimId] = []
+        #: A copy of every `add`/`save` argument, in call order. The final row can hide
+        #: an intermediate write that held something it should not have (ADR-001).
+        self.writes: list[Claim] = []
         self._baseline: dict[ClaimId, datetime] = {}
 
     def _track(self, claim: Claim) -> Claim:
@@ -50,6 +53,7 @@ class FakeClaimRepository:
         return copy
 
     async def add(self, claim: Claim) -> None:
+        self.writes.append(claim.model_copy())
         self.claims[claim.id] = claim.model_copy()
         self._baseline[claim.id] = claim.updated_at
 
@@ -75,6 +79,7 @@ class FakeClaimRepository:
         stored = self.claims.get(claim.id)
         if stored is not None and stored.updated_at != baseline:
             raise ConcurrentModification(f"claim {claim.id} changed since it was read")
+        self.writes.append(claim.model_copy())
         self.claims[claim.id] = claim.model_copy()
         self.saved.append(claim.id)
         self._baseline[claim.id] = claim.updated_at

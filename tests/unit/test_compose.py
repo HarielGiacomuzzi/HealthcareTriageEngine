@@ -2,6 +2,7 @@
 phase depends on are present and point at the right things. Cheap insurance against a
 silent edit — the alternative is finding out during a demo."""
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -113,3 +114,45 @@ def test_the_worker_metrics_port_is_not_published(compose: dict[str, Any]) -> No
     """Scraped from inside the compose network; publishing it to the host is one more
     listening socket for nothing."""
     assert "ports" not in compose["services"]["worker"]
+
+
+OBSERVABILITY = COMPOSE.parent / "deploy" / "observability"
+
+
+def test_the_observability_services_only_start_under_their_profile(compose: dict[str, Any]) -> None:
+    """`make up` and `make demo` must not pull Prometheus and Grafana."""
+    for service in ("prometheus", "grafana"):
+        assert compose["services"][service]["profiles"] == ["observability"]
+
+
+def test_prometheus_scrapes_both_processes() -> None:
+    """Phase 6 #3: one registry per process, so two targets, not one."""
+    config = yaml.safe_load((OBSERVABILITY / "prometheus.yml").read_text(encoding="utf-8"))
+    targets = {
+        target
+        for job in config["scrape_configs"]
+        for static in job["static_configs"]
+        for target in static["targets"]
+    }
+
+    assert targets == {"api:8000", "worker:9100"}
+
+
+def test_the_dashboard_charts_what_the_spec_names() -> None:
+    dashboard = json.loads(
+        (OBSERVABILITY / "grafana" / "dashboards" / "ecet.json").read_text(encoding="utf-8")
+    )
+    datasource = yaml.safe_load(
+        (OBSERVABILITY / "grafana" / "provisioning" / "datasources" / "prometheus.yml").read_text(
+            encoding="utf-8"
+        )
+    )["datasources"][0]
+    expressions = " ".join(
+        target["expr"] for panel in dashboard["panels"] for target in panel["targets"]
+    )
+
+    assert "ecet_ingest_seconds_bucket" in expressions
+    assert "ecet_llm_calls_avoided_total" in expressions
+    assert "ecet_triage_route_total" in expressions
+    for panel in dashboard["panels"]:
+        assert panel["datasource"]["uid"] == datasource["uid"]

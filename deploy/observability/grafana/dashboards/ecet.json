@@ -1,0 +1,80 @@
+{
+  "title": "ECET",
+  "uid": "ecet",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Ingest latency p95 (s)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "ecet-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, outcome) (rate(ecet_ingest_seconds_bucket[5m])))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "LLM calls avoided (ADR-002)",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "ecet-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(ecet_llm_calls_avoided_total) / clamp_min(sum(ecet_llm_calls_avoided_total) + sum(ecet_llm_calls_total), 1)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "piechart",
+      "title": "Route split",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "ecet-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (route) (ecet_triage_route_total)",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "bargauge",
+      "title": "Claims by status",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "ecet-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (ecet_claims_by_status)",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "bargauge",
+      "title": "Open reviews by tenant",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "ecet-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (tenant) (ecet_review_open)",
+          "legendFormat": "{{tenant}}"
+        }
+      ]
+    }
+  ]
+}

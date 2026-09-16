@@ -12,12 +12,20 @@ recoverable failure states the state machine allows from that point —
 `EXTRACTION_FAILED` and `NO_POLICIES` — are persisted and committed on their own path
 before the error is re-raised.
 
-The publish (step 10) happens *after* the `POLICIES_ATTACHED` commit. A publish that
-fails therefore leaves a durable `POLICIES_ATTACHED` claim that a retry can re-send;
-the transactional outbox that would make this atomic is deferred out of v1. The retry
-is the same object arriving again — MinIO re-sending the event it got a 503 for, or an
+**No connection across slow work.** The object read, pypdf, spaCy and the publish each
+run with no unit of work open: read and insert, close; fetch, extract and redact;
+re-read, attach policies, check and save, close; publish; re-read and mark `QUEUED`.
+Each write re-reads the claim, because `ClaimRepository.save` refuses a claim this unit
+of work did not load.
+
+The publish happens *after* the `POLICIES_ATTACHED` commit. A publish that fails
+therefore leaves a durable `POLICIES_ATTACHED` claim that a retry can re-send; the
+transactional outbox that would make this atomic is deferred out of v1. The retry is
+the same object arriving again — MinIO re-sending the event it got a 503 for, or an
 operator re-posting `/v1/claims/ingest`: the duplicate check re-publishes a claim it
-finds still `POLICIES_ATTACHED` instead of returning it untouched.
+finds still `POLICIES_ATTACHED` instead of returning it untouched. A worker that reads
+the claim before the `QUEUED` write lands requeues the message (UC-06,
+`ClaimNotYetQueued`).
 """
 
 import time
@@ -106,94 +114,108 @@ class IngestClaimDocument:
         source.ensure_size_within(self._max_pdf_bytes)
         tenant_id = source.tenant_id()
 
+        republish: Sequence[Policy] | None = None
         async with self._uow_factory() as uow:
             duplicate = await uow.claims.find_by_source(source.bucket, source.key, source.etag)
             if duplicate is not None:
                 if duplicate.status is ClaimStatus.POLICIES_ATTACHED:
-                    await self._republish(uow, duplicate)
-                # ADR-006: same object, same content — nothing else to redo.
-                log.info(
-                    "claim.duplicate",
-                    claim_id=str(duplicate.id),
-                    tenant_id=str(tenant_id),
-                    status=duplicate.status.value,
+                    # Against the policy versions attached the first time, not whatever
+                    # is active today.
+                    republish = await uow.policies.get_many(duplicate.policy_ids)
+            else:
+                await uow.tenants.get(tenant_id)  # raises TenantNotFound; no claim is created
+                now = self._clock.now()
+                claim = Claim(
+                    id=ClaimId(uuid4()),
+                    tenant_id=tenant_id,
+                    source=source,
+                    created_at=now,
+                    updated_at=now,
                 )
-                return IngestResult(claim_id=duplicate.id, status=duplicate.status, duplicate=True)
+                await uow.claims.add(claim)
+                await uow.commit()
 
-            await uow.tenants.get(tenant_id)  # raises TenantNotFound; no claim is created
+        if duplicate is None:
+            return await self._run_pipeline(claim)
 
-            now = self._clock.now()
-            claim = Claim(
-                id=ClaimId(uuid4()),
-                tenant_id=tenant_id,
-                source=source,
-                created_at=now,
-                updated_at=now,
-            )
-            await uow.claims.add(claim)
-            await uow.commit()
+        status = duplicate.status
+        if republish is not None:
+            # The retry for a failed publish: the claim already holds the redacted
+            # text, the deterministic result and its policy ids, so only the publish
+            # repeats. Raises `QueuePublishError` again if the broker is still
+            # refusing, leaving the claim exactly as it was.
+            await self._enqueue.execute(duplicate, republish)
+            status = await self._mark_queued(duplicate.id)
+        # ADR-006: same object, same content — nothing else to redo.
+        log.info(
+            "claim.duplicate",
+            claim_id=str(duplicate.id),
+            tenant_id=str(tenant_id),
+            status=status.value,
+        )
+        return IngestResult(claim_id=duplicate.id, status=status, duplicate=True)
 
-            await self._run_pipeline(uow, claim)
-            await uow.commit()
-            return IngestResult(claim_id=claim.id, status=claim.status)
-
-    async def _run_pipeline(self, uow: UnitOfWork, claim: Claim) -> None:
-        # Both depend on repositories owned by this unit of work, so they are built
-        # here rather than injected — a request-scoped dependency cannot be a
-        # process-scoped constructor argument.
-        attach_policies = AttachTenantPolicies(uow.policies, self._clock)
-        request_review = RequestHumanReview(uow.review_tasks, self._clock)
-
+    async def _run_pipeline(self, received: Claim) -> IngestResult:
         try:
-            text = await self._read_text(claim.source)
+            text = await self._read_text(received.source)
         except ExtractionFailed as error:
-            await self._fail(uow, claim, ClaimStatus.EXTRACTION_FAILED, str(error))
+            async with self._uow_factory() as uow:
+                claim = await uow.claims.get(received.id)
+                await self._fail(uow, claim, ClaimStatus.EXTRACTION_FAILED, str(error))
             raise
-        self._advance(claim, ClaimStatus.EXTRACTED)
 
         redacted = await self._redact_pii.execute(text)
         del text  # ADR-001: the raw note stops existing here.
-        claim.redacted = redacted
-        self._advance(claim, ClaimStatus.REDACTED)
 
-        try:
-            policies: Sequence[Policy] = await attach_policies.execute(claim.tenant_id)
-        except NoPoliciesForTenant as error:
-            await self._fail(uow, claim, ClaimStatus.NO_POLICIES, str(error))
-            raise
-        claim.policy_ids = [policy.id for policy in policies]
-        self._advance(claim, ClaimStatus.POLICIES_ATTACHED)
+        async with self._uow_factory() as uow:
+            claim = await uow.claims.get(received.id)
+            self._advance(claim, ClaimStatus.EXTRACTED)
+            claim.redacted = redacted
+            self._advance(claim, ClaimStatus.REDACTED)
 
-        deterministic = await self._run_checks.execute(redacted, policies)
-        claim.deterministic = deterministic
+            # Both depend on repositories owned by this unit of work, so they are built
+            # here rather than injected.
+            attach_policies = AttachTenantPolicies(uow.policies, self._clock)
+            try:
+                policies: Sequence[Policy] = await attach_policies.execute(claim.tenant_id)
+            except NoPoliciesForTenant:
+                await self._fail(uow, claim, ClaimStatus.NO_POLICIES, "no_policies")
+                raise
+            claim.policy_ids = [policy.id for policy in policies]
+            self._advance(claim, ClaimStatus.POLICIES_ATTACHED)
 
-        if deterministic.verdict is Verdict.REJECT:
-            # ADR-002's saving: a human looks at it, the LLM is never called.
-            await request_review.execute(claim, ReviewReason.DETERMINISTIC_REJECT)
-            self._advance(claim, ClaimStatus.REVIEW_PENDING)
+            deterministic = await self._run_checks.execute(redacted, policies)
+            claim.deterministic = deterministic
+            if deterministic.verdict is Verdict.REJECT:
+                # ADR-002's saving: a human looks at it, the LLM is never called.
+                request_review = RequestHumanReview(uow.review_tasks, self._clock)
+                await request_review.execute(claim, ReviewReason.DETERMINISTIC_REJECT)
+                self._advance(claim, ClaimStatus.REVIEW_PENDING)
+
+            # Commit before publishing: a publish failure must leave a durable
+            # POLICIES_ATTACHED claim, not a rolled-back one.
             await uow.claims.save(claim)
-            return
+            await uow.commit()
 
-        # Commit before publishing: a publish failure must leave a durable
-        # POLICIES_ATTACHED claim, not a rolled-back one.
-        await uow.claims.save(claim)
-        await uow.commit()
+        if claim.status is ClaimStatus.REVIEW_PENDING:
+            return IngestResult(claim_id=claim.id, status=claim.status)
 
         await self._enqueue.execute(claim, policies)
-        self._advance(claim, ClaimStatus.QUEUED)
-        await uow.claims.save(claim)
+        return IngestResult(claim_id=claim.id, status=await self._mark_queued(claim.id))
 
-    async def _republish(self, uow: UnitOfWork, claim: Claim) -> None:
-        """The retry for a failed publish (step 10). The claim already holds the redacted
-        text, the deterministic result and its policy ids, so only the publish repeats —
-        against the policy versions attached the first time, not whatever is active
-        today. Raises `QueuePublishError` again if the broker is still refusing, leaving
-        the claim exactly as it was."""
-        policies = await uow.policies.get_many(claim.policy_ids)
-        await self._enqueue.execute(claim, policies)
-        self._advance(claim, ClaimStatus.QUEUED)
-        await uow.claims.save(claim)
-        await uow.commit()
+    async def _mark_queued(self, claim_id: ClaimId) -> ClaimStatus:
+        """The write after a publish, in its own unit of work. A claim no longer
+        `POLICIES_ATTACHED` was marked `QUEUED` by a concurrent re-publish of the same
+        object; it is left as it is. Two re-publishes that both re-read `POLICIES_ATTACHED`
+        before either commits still collide at the optimistic save: the later one raises
+        `ConcurrentModification` (409), and its retry is a duplicate."""
+        async with self._uow_factory() as uow:
+            claim = await uow.claims.get(claim_id)
+            if claim.status is ClaimStatus.POLICIES_ATTACHED:
+                self._advance(claim, ClaimStatus.QUEUED)
+                await uow.claims.save(claim)
+                await uow.commit()
+            return claim.status
 
     async def _read_text(self, source: SourceObject) -> str:
         try:
@@ -203,7 +225,7 @@ class IngestClaimDocument:
             raise ExtractionFailed("object_unavailable") from error
         text = await self._extractor.extract(data)
         if not text.strip():
-            raise ExtractionFailed("empty_text")
+            raise ExtractionFailed("no_text")
         return text
 
     def _advance(self, claim: Claim, status: ClaimStatus) -> None:

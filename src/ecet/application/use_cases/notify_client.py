@@ -19,6 +19,8 @@ from ecet.application.ports.webhook_client import WebhookClient
 from ecet.domain.claim import Claim
 from ecet.domain.errors import TenantNotFound
 from ecet.domain.evaluation import Decision
+from ecet.domain.ids import TenantId
+from ecet.domain.ports.tenant_repository import TenantRepository
 from ecet.domain.tenant import Tenant
 
 log = structlog.get_logger(__name__)
@@ -65,6 +67,20 @@ def tenant_inactive(error: TenantNotFound) -> Delivery:
         error=f"{type(error).__name__}: {error}",
         attempted=False,
     )
+
+
+async def tenant_for_delivery(
+    tenants: TenantRepository, tenant_id: TenantId
+) -> Tenant | TenantNotFound:
+    """The tenant a delivery goes to, read while the caller's unit of work is still open
+    — the delivery itself happens after it closes. A tenant deactivated in the meantime
+    is not an error here: it is a delivery that will never happen, and the caller parks
+    the claim under `tenant_inactive`. Returned as one value rather than an
+    `(ok, error)` pair so the caller narrows with `isinstance` instead of an `assert`."""
+    try:
+        return await tenants.get(tenant_id)
+    except TenantNotFound as error:
+        return error
 
 
 class NotifyClient:

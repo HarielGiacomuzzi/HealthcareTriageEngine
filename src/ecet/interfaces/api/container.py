@@ -8,6 +8,7 @@ The container's field types are the **ports**, not the adapters, so the API test
 build one out of `tests/fakes.py` and exercise the real routes with no infrastructure.
 """
 
+import contextlib
 from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import dataclass, field
 
@@ -64,96 +65,97 @@ async def _noop() -> None:
 
 
 async def build_container(settings: Settings) -> ApiContainer:
-    engine = create_engine(settings.database_url.get_secret_value())
-    # The api's `/metrics` is mounted in `create_app`; this is the gauge behind it that
-    # shows a connection held across an external call.
-    metrics.DB_POOL_IN_USE.set_function(
-        engine.pool.checkedout  # type: ignore[attr-defined]  # QueuePool, the engine default
-    )
+    # Everything that opens is registered on `cleanup` the moment it exists, so a
+    # failure part-way — a schema behind head, a broker refusing, a missing spaCy
+    # model — releases what was already open instead of leaking it. On success,
+    # `pop_all()` hands the same callbacks to `aclose`, which runs them in reverse.
+    async with contextlib.AsyncExitStack() as cleanup:
+        engine = create_engine(settings.database_url.get_secret_value())
+        cleanup.push_async_callback(engine.dispose)
+        # The api's `/metrics` is mounted in `create_app`; this is the gauge behind it
+        # that shows a connection held across an external call.
+        metrics.DB_POOL_IN_USE.set_function(
+            engine.pool.checkedout  # type: ignore[attr-defined]  # QueuePool, the engine default
+        )
 
-    if settings.auto_migrate:
-        # Compose-only. Phase 2 shipped the migration and the seed but wired neither
-        # into a process; this is where they run.
-        await upgrade_to_head(settings.database_url.get_secret_value())
-        if settings.env == "dev":
-            statements = await load_seed(engine)
-            log.info("db.seeded", statements=statements)
-    else:
-        await assert_at_head(engine)
+        if settings.auto_migrate:
+            # Compose-only. Phase 2 shipped the migration and the seed but wired neither
+            # into a process; this is where they run.
+            await upgrade_to_head(settings.database_url.get_secret_value())
+            if settings.env == "dev":
+                statements = await load_seed(engine)
+                log.info("db.seeded", statements=statements)
+        else:
+            await assert_at_head(engine)
 
-    session_factory = create_session_factory(engine)
-    queue = RabbitMqEvaluationQueue(settings.amqp_url.get_secret_value())
-    await queue.start()
+        session_factory = create_session_factory(engine)
+        queue = RabbitMqEvaluationQueue(settings.amqp_url.get_secret_value())
+        # Registered before `start()`: a start that connects and then fails declaring
+        # the topology leaves an open connection, and `stop()` is safe on a half-open
+        # queue.
+        cleanup.push_async_callback(queue.stop)
+        await queue.start()
 
-    redactor = PresidioPiiRedactor(
-        replacements=ENTITY_REPLACEMENTS,
-        custom_patterns=CUSTOM_PATTERNS,
-        score_threshold=SCORE_THRESHOLD,
-        spacy_model=settings.spacy_model,
-        concurrency=settings.pii_concurrency,
-    )
-    storage = S3ObjectStorage(
-        endpoint_url=settings.s3_endpoint,
-        access_key=settings.s3_access_key.get_secret_value(),
-        secret_key=settings.s3_secret_key.get_secret_value(),
-    )
-    clock = SystemClock()
+        redactor = PresidioPiiRedactor(
+            replacements=ENTITY_REPLACEMENTS,
+            custom_patterns=CUSTOM_PATTERNS,
+            score_threshold=SCORE_THRESHOLD,
+            spacy_model=settings.spacy_model,
+            concurrency=settings.pii_concurrency,
+        )
+        storage = S3ObjectStorage(
+            endpoint_url=settings.s3_endpoint,
+            access_key=settings.s3_access_key.get_secret_value(),
+            secret_key=settings.s3_secret_key.get_secret_value(),
+        )
+        clock = SystemClock()
 
-    # UC-09c and the operator retry deliver from the api process, not the worker.
-    # max_attempts=1 here, not settings.webhook_max_attempts: POST
-    # /v1/claims/{id}/retry-notify *is* the retry, and both ResolveReview and
-    # RetryNotify park cleanly on a first failure. In-request retries (up to
-    # ~35s of backoff) would hold a pooled connection, and for resolve also
-    # the review-task row lock, while /readyz's database probe shares the
-    # same pool.
-    webhook = HttpxWebhookClient(timeout_s=settings.webhook_timeout_s, max_attempts=1)
+        # UC-09c and the operator retry deliver from the api process, not the worker.
+        # max_attempts=1 here, not settings.webhook_max_attempts: POST
+        # /v1/claims/{id}/retry-notify *is* the retry, and both ResolveReview and
+        # RetryNotify park cleanly on a first failure. In-request retries (up to
+        # ~35s of backoff) would hold the request open while /readyz's database
+        # probe shares the same pool.
+        webhook = HttpxWebhookClient(timeout_s=settings.webhook_timeout_s, max_attempts=1)
+        cleanup.push_async_callback(webhook.aclose)
 
-    def uow_factory() -> UnitOfWork:
-        return SqlAlchemyUnitOfWork(session_factory)
+        def uow_factory() -> UnitOfWork:
+            return SqlAlchemyUnitOfWork(session_factory)
 
-    ingest = IngestClaimDocument(
-        uow_factory=uow_factory,
-        storage=storage,
-        extractor=PypdfTextExtractor(max_pages=settings.max_pdf_pages),
-        redact_pii=RedactPii(redactor),
-        run_checks=RunDeterministicChecks(),
-        enqueue=EnqueueEvaluation(queue, clock),
-        clock=clock,
-        max_pdf_bytes=settings.max_pdf_bytes,
-    )
+        ingest = IngestClaimDocument(
+            uow_factory=uow_factory,
+            storage=storage,
+            extractor=PypdfTextExtractor(max_pages=settings.max_pdf_pages),
+            redact_pii=RedactPii(redactor),
+            run_checks=RunDeterministicChecks(),
+            enqueue=EnqueueEvaluation(queue, clock),
+            clock=clock,
+            max_pdf_bytes=settings.max_pdf_bytes,
+        )
 
-    async def database_ready() -> bool:
-        async with engine.connect() as connection:
-            await connection.execute(text("SELECT 1"))
-        return True
+        async def database_ready() -> bool:
+            async with engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+            return True
 
-    async def queue_ready() -> bool:
-        return await queue.is_healthy()
+        async def queue_ready() -> bool:
+            return await queue.is_healthy()
 
-    async def redactor_ready() -> bool:
-        return True  # constructing it loaded the model; reaching here means it is up
+        async def redactor_ready() -> bool:
+            return True  # constructing it loaded the model; reaching here means it is up
 
-    async def aclose() -> None:
-        try:
-            await queue.stop()
-        finally:
-            try:
-                await webhook.aclose()
-            finally:
-                await engine.dispose()
-
-    return ApiContainer(
-        settings=settings,
-        uow_factory=uow_factory,
-        storage=storage,
-        ingest=ingest,
-        list_reviews=ListOpenReviews(uow_factory=uow_factory),
-        resolve_review=ResolveReview(uow_factory=uow_factory, webhook=webhook, clock=clock),
-        retry_notify=RetryNotify(uow_factory=uow_factory, webhook=webhook, clock=clock),
-        probes={
-            "database": database_ready,
-            "queue": queue_ready,
-            "redactor": redactor_ready,
-        },
-        aclose=aclose,
-    )
+        return ApiContainer(
+            settings=settings,
+            uow_factory=uow_factory,
+            storage=storage,
+            ingest=ingest,
+            list_reviews=ListOpenReviews(uow_factory=uow_factory),
+            resolve_review=ResolveReview(uow_factory=uow_factory, webhook=webhook, clock=clock),
+            retry_notify=RetryNotify(uow_factory=uow_factory, webhook=webhook, clock=clock),
+            probes={
+                "database": database_ready,
+                "queue": queue_ready,
+                "redactor": redactor_ready,
+            },
+            aclose=cleanup.pop_all().aclose,
+        )

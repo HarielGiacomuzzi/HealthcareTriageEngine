@@ -11,6 +11,7 @@ Module: `ecet/interfaces/worker/`. Files: `main.py`, `container.py`, `handler.py
 3. Per message: validate → [`EvaluateClaim`](../02-use-cases/UC-06-evaluate-claim.md)`.execute(msg)` inside fresh `UnitOfWork`.
    - Success → ack.
    - `LLMTransientError` / `QueuePublishError` / DB connection error → nack requeue.
+   - `ClaimNotYetQueued` → nack requeue (after a 0.5 s hold): the message beat UC-01's `QUEUED` commit.
    - Other → nack to DLQ; log with claim_id.
 4. Structured log per message: `claim_id`, `tenant_id`, `outcome`, `duration_ms`, `retry_count`.
 5. SIGTERM → graceful stop (see [queue spec](../03-infrastructure/queue-rabbitmq.md#consumer)). Exit code 0.

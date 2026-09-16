@@ -18,7 +18,7 @@ from typing import Protocol
 import structlog
 from sqlalchemy.exc import InterfaceError, OperationalError
 
-from ecet.application.errors import LLMTransientError, QueuePublishError
+from ecet.application.errors import ClaimNotYetQueued, LLMTransientError, QueuePublishError
 from ecet.application.messages import EvaluationMessage
 
 log = structlog.get_logger(__name__)
@@ -34,6 +34,7 @@ class AckAction(StrEnum):
 #: statement-level failure (IntegrityError, ProgrammingError) is not in the list.
 REQUEUE_ERRORS: tuple[type[BaseException], ...] = (
     LLMTransientError,
+    ClaimNotYetQueued,
     QueuePublishError,
     OperationalError,
     InterfaceError,

@@ -19,12 +19,15 @@ from ecet.application.notifications import DecidedBy
 from ecet.application.ports.clock import Clock
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.ports.webhook_client import WebhookClient
-from ecet.application.use_cases.notify_client import NotifyClient, tenant_inactive
+from ecet.application.use_cases.notify_client import (
+    NotifyClient,
+    tenant_for_delivery,
+    tenant_inactive,
+)
 from ecet.domain.claim import Claim, ClaimStatus
 from ecet.domain.errors import InvalidTransition, TenantNotFound
 from ecet.domain.evaluation import Decision, ReviewTask
 from ecet.domain.ids import ClaimId
-from ecet.domain.tenant import Tenant
 
 log = structlog.get_logger(__name__)
 
@@ -48,7 +51,7 @@ class RetryNotify:
                 raise InvalidTransition(f"claim {claim.id} is {claim.status}, not NOTIFY_FAILED")
             task = await uow.review_tasks.find_by_claim(claim.id)
             outcome, confidence, decided_by, target = self._decision(claim, task)
-            tenant_or_error = await self._tenant(uow, claim)
+            tenant_or_error = await tenant_for_delivery(uow.tenants, claim.tenant_id)
 
         # Outside the transaction: one attempt, no in-request backoff, and no pooled
         # connection held for it (this use case is itself the operator's retry).
@@ -115,12 +118,3 @@ class RetryNotify:
         # Not reachable through the use cases — NOTIFY_FAILED is only ever entered
         # once a decision exists. Refusing beats inventing an outcome.
         raise InvalidTransition(f"claim {claim.id} has no decision to deliver")
-
-    async def _tenant(self, uow: UnitOfWork, claim: Claim) -> Tenant | TenantNotFound:
-        """Read before the transaction closes, because the delivery happens after it.
-        Returned as one value rather than an `(ok, error)` pair so the caller narrows
-        with `isinstance` instead of an `assert`."""
-        try:
-            return await uow.tenants.get(claim.tenant_id)
-        except TenantNotFound as error:
-            return error

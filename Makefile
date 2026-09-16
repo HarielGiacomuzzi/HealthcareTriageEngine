@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model drop demo dlq-replay
+.PHONY: install lint format typecheck imports test check hooks up down clean logs ps migrate seed fixtures spacy-model drop demo dlq-replay e2e observability
 
 install:
 	uv sync
@@ -55,14 +55,27 @@ logs: .env
 ps: .env
 	docker compose ps
 
+# The stack plus Prometheus (localhost:9090) and Grafana (localhost:3000, dashboard "ECET").
+observability: .env
+	docker compose --profile observability up --build -d
+
 fixtures:
 	uv run python scripts/make_fixtures.py
 
+SPACY_MODEL ?= en_core_web_lg
+# Keep in step with the Dockerfile and ci.yml (tests/unit/test_spacy_pin.py).
+SPACY_MODEL_VERSION ?= 3.8.0
+
 spacy-model:
-	uv run python -m spacy download $(or $(SPACY_MODEL),en_core_web_lg)
+	uv run python -m spacy download $(SPACY_MODEL)-$(SPACY_MODEL_VERSION) --direct
 
 drop: fixtures
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf $(or $(TENANT),tenant-a)
+
+# The E2E suite against the compose stack. `up` is a no-op when the stack is already
+# running; the suite itself waits for /readyz and for minio-setup to finish.
+e2e: fixtures up
+	uv run pytest -m e2e
 
 # Move dead-lettered evaluations back onto claims.evaluate — the recovery for a claim a
 # vendor 429 dead-lettered (requeue has no delay, so five deliveries go in milliseconds).
@@ -84,12 +97,21 @@ demo: fixtures up
 	@# `minio-setup` restarts MinIO to pick up the webhook target. Dropping before it
 	@# finishes either hits a refused connection or lands an object no event covers.
 	@echo "waiting for minio-setup to finish wiring notifications..."
-	@docker compose wait minio-setup
+	@# Not `docker compose wait`: it errors once the one-shot has exited, which on a cold
+	@# stack it has long before /readyz answers.
+	@for i in $$(seq 1 150); do \
+		STATE=$$(docker compose ps -a --format '{{.State}} {{.ExitCode}}' minio-setup); \
+		[ "$$STATE" = "exited 0" ] && break; \
+		case "$$STATE" in exited*) echo "minio-setup failed: $$STATE; try 'docker compose logs minio-setup'"; exit 1;; esac; \
+		[ $$i -eq 150 ] && { echo "minio-setup did not finish within 300s: $${STATE:-no container}"; exit 1; }; \
+		sleep 2; \
+	done
 	@# The mock client keeps every delivery it has ever received. Without this, a second
 	@# `make demo` without `make clean` leaves the previous run's delivery at `.[0]`.
 	@curl -sf -X DELETE localhost:8081/received >/dev/null
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf tenant-a
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_unclear.pdf tenant-a
+	./scripts/demo_drop.sh tests/fixtures/pdfs/note_excluded_code.pdf tenant-a
 	./scripts/demo_drop.sh tests/fixtures/pdfs/note_simple.pdf tenant-empty || true
 	@sleep 5
 	docker compose logs --since 60s worker

@@ -22,5 +22,6 @@ async def readyz(container: ContainerDep) -> JSONResponse:
             results[name] = await probe()
         except Exception:
             results[name] = False
-    status_code = 200 if all(results.values()) else 503
+    # `all([])` is True: no probes means nothing was checked, which is not ready.
+    status_code = 200 if results and all(results.values()) else 503
     return JSONResponse(results, status_code=status_code)

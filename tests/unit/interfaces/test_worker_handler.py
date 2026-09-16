@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from tests.pii import assert_no_pii
 
 from ecet.application.errors import (
+    ClaimNotYetQueued,
     LLMInvalidOutput,
     LLMPermanentError,
     LLMTransientError,
@@ -49,6 +50,7 @@ def test_no_error_acks() -> None:
     "error",
     [
         LLMTransientError("429"),
+        ClaimNotYetQueued("not_yet_queued"),
         QueuePublishError("no confirm"),
         OperationalError("SELECT 1", {}, Exception("connection reset")),
         ConnectionError("reset"),

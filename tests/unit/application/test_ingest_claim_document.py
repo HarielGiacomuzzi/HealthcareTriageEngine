@@ -27,7 +27,12 @@ from ecet.application.use_cases.ingest_claim_document import (
 from ecet.application.use_cases.redact_pii import RedactPii
 from ecet.application.use_cases.run_deterministic_checks import RunDeterministicChecks
 from ecet.domain.claim import ClaimStatus
-from ecet.domain.errors import InvalidObjectKey, PdfTooLarge, TenantNotFound
+from ecet.domain.errors import (
+    InvalidObjectKey,
+    NoPoliciesForTenant,
+    PdfTooLarge,
+    TenantNotFound,
+)
 from ecet.domain.evaluation import ReviewReason, ReviewStatus
 from ecet.domain.ids import PolicyId, TenantId
 from ecet.domain.policy import Policy
@@ -92,11 +97,12 @@ class Harness:
         self.storage = FakeObjectStorage({(BUCKET, KEY): PDF})
         self.extractor = extractor or FakeTextExtractor(read_note(note))
         self.queue = queue or FakeEvaluationQueue()
+        self.redactor = FakePiiRedactor()
         self.use_case = IngestClaimDocument(
             uow_factory=lambda: self.uow,
             storage=self.storage,
             extractor=self.extractor,
-            redact_pii=RedactPii(FakePiiRedactor()),
+            redact_pii=RedactPii(self.redactor),
             run_checks=RunDeterministicChecks(),
             enqueue=EnqueueEvaluation(self.queue, self.clock),
             clock=self.clock,
@@ -195,8 +201,6 @@ async def test_an_oversized_object_is_rejected_before_any_io() -> None:
 
 
 async def test_a_tenant_with_no_policies_persists_no_policies_and_raises() -> None:
-    from ecet.domain.errors import NoPoliciesForTenant
-
     harness = Harness(policies=[])
 
     with pytest.raises(NoPoliciesForTenant):
@@ -204,7 +208,9 @@ async def test_a_tenant_with_no_policies_persists_no_policies_and_raises() -> No
 
     (stored,) = harness.uow.claims.claims.values()
     assert stored.status is ClaimStatus.NO_POLICIES
-    assert stored.failure_reason == "tenant-a"
+    # A short token, like every other failure_reason — not the tenant slug that
+    # `str(NoPoliciesForTenant)` happens to be.
+    assert stored.failure_reason == "no_policies"
     assert harness.queue.published == []
 
 
@@ -240,7 +246,9 @@ async def test_empty_extracted_text_is_an_extraction_failure() -> None:
 
     (stored,) = harness.uow.claims.claims.values()
     assert stored.status is ClaimStatus.EXTRACTION_FAILED
-    assert stored.failure_reason == "empty_text"
+    # Same condition as pypdf's "no_text" (a scan), so the same token: operators
+    # should not have to know which layer noticed the page was blank.
+    assert stored.failure_reason == "no_text"
 
 
 async def test_a_deterministic_reject_opens_a_review_and_skips_the_queue() -> None:
@@ -323,6 +331,8 @@ async def test_the_same_object_arriving_again_re_publishes_a_claim_stuck_before_
     assert [policy.id for policy in message.policies] == stored.policy_ids
     assert harness.extractor.calls == 1  # nothing before the publish is redone
     assert_no_pii(message.model_dump_json())
+    # first ingest: insert + POLICIES_ATTACHED; re-publish: QUEUED write
+    assert harness.uow.commits == 3
 
 
 async def test_a_re_publish_that_fails_again_leaves_the_claim_policies_attached() -> None:
@@ -376,3 +386,142 @@ async def test_a_failed_ingest_is_timed_as_failed() -> None:
         await harness.ingest()
 
     assert sample("ecet_ingest_seconds_count", outcome="failed") == before + 1
+
+
+@pytest.mark.parametrize(
+    ("note", "minimum_writes"),
+    [
+        ("meets", 3),  # add, save POLICIES_ATTACHED, save QUEUED
+        ("unclear", 3),
+        ("excluded_code", 2),  # add, save REVIEW_PENDING
+    ],
+)
+async def test_no_claim_written_during_ingestion_carries_pii(
+    note: str, minimum_writes: int
+) -> None:
+    """UC-01's test list asks for the ADR-001 assertion on every `claims.save`
+    argument, not only on the row that is left at the end."""
+    harness = Harness(note=note)
+
+    await harness.ingest()
+
+    assert len(harness.uow.claims.writes) >= minimum_writes
+    for written in harness.uow.claims.writes:
+        assert_no_pii(written.model_dump_json())
+
+
+async def test_a_failed_ingestion_writes_no_pii_either() -> None:
+    harness = Harness(policies=[])
+
+    with pytest.raises(NoPoliciesForTenant):
+        await harness.ingest()
+
+    assert harness.uow.claims.writes
+    for written in harness.uow.claims.writes:
+        assert_no_pii(written.model_dump_json())
+
+
+async def test_a_duplicate_of_a_claim_under_review_is_returned_untouched() -> None:
+    harness = Harness(note="excluded_code")
+    first = await harness.ingest()
+    assert first.status is ClaimStatus.REVIEW_PENDING
+    writes_before = len(harness.uow.claims.writes)
+
+    second = await harness.ingest()
+
+    assert second.duplicate is True
+    assert second.claim_id == first.claim_id
+    assert second.status is ClaimStatus.REVIEW_PENDING
+    assert harness.extractor.calls == 1
+    assert harness.queue.published == []
+    assert len(harness.uow.claims.writes) == writes_before
+    assert len(harness.uow.review_tasks.tasks) == 1
+
+
+async def test_a_duplicate_of_a_failed_claim_is_not_retried() -> None:
+    """ADR-006: same object, same content, same answer. A blank page stays blank."""
+    harness = Harness(extractor=FakeTextExtractor(error=ExtractionFailed("no_text")))
+    with pytest.raises(ExtractionFailed):
+        await harness.ingest()
+
+    second = await harness.ingest()
+
+    assert second.duplicate is True
+    assert second.status is ClaimStatus.EXTRACTION_FAILED
+    assert harness.extractor.calls == 1
+
+
+async def test_the_duplicate_check_runs_before_the_tenant_lookup() -> None:
+    """A tenant deactivated after its claim arrived must not turn a replayed event into
+    a 404 — the claim exists, and the duplicate answer is the truthful one."""
+    harness = Harness()
+    first = await harness.ingest()
+    harness.uow.tenants.tenants.clear()
+
+    second = await harness.ingest()
+
+    assert second.duplicate is True
+    assert second.claim_id == first.claim_id
+
+
+def spy_on_unit_of_work(harness: Harness, target: object, method: str) -> list[bool]:
+    """Wrap `target.method` so each call records whether the unit of work was open.
+    An instance attribute shadows the class method, so the fake itself is unchanged."""
+    open_during_call: list[bool] = []
+    original = getattr(target, method)
+
+    async def recording(*args: Any, **kwargs: Any) -> Any:
+        open_during_call.append(harness.uow.active)
+        return await original(*args, **kwargs)
+
+    setattr(target, method, recording)
+    return open_during_call
+
+
+async def test_no_external_call_runs_inside_a_unit_of_work() -> None:
+    """The object read, pypdf, spaCy and the broker can each take seconds; none of them
+    may hold a pooled connection while they do (the Phase 6 fix, on the ingest side)."""
+    harness = Harness()
+    calls = {
+        "get_bytes": spy_on_unit_of_work(harness, harness.storage, "get_bytes"),
+        "extract": spy_on_unit_of_work(harness, harness.extractor, "extract"),
+        "redact": spy_on_unit_of_work(harness, harness.redactor, "redact"),
+        "publish": spy_on_unit_of_work(harness, harness.queue, "publish"),
+    }
+
+    result = await harness.ingest()
+
+    assert result.status is ClaimStatus.QUEUED
+    assert calls == {name: [False] for name in calls}
+
+
+async def test_a_re_publish_runs_outside_the_unit_of_work_too() -> None:
+    harness = Harness(queue=FakeEvaluationQueue(error=QueuePublishError("no confirm")))
+    with pytest.raises(QueuePublishError):
+        await harness.ingest()
+    harness.queue.error = None
+    publish_calls = spy_on_unit_of_work(harness, harness.queue, "publish")
+
+    result = await harness.ingest()
+
+    assert result.status is ClaimStatus.QUEUED
+    assert publish_calls == [False]
+
+
+async def test_a_claim_queued_by_a_concurrent_re_publish_is_not_an_error() -> None:
+    """Between UC-01's `POLICIES_ATTACHED` commit and its `QUEUED` write, the same object
+    arriving again can re-publish and mark the claim `QUEUED` first. The late writer
+    finds it already `QUEUED` and leaves it, instead of raising `InvalidTransition`."""
+    harness = Harness()
+
+    async def racing_publish(message: Any) -> None:
+        harness.queue.published.append(message)
+        stored = harness.uow.claims.claims[message.claim_id]
+        stored.transition(ClaimStatus.QUEUED, now=NOW)
+
+    harness.queue.publish = racing_publish  # type: ignore[method-assign]
+
+    result = await harness.ingest()
+
+    assert result.status is ClaimStatus.QUEUED
+    assert harness.uow.claims.claims[result.claim_id].status is ClaimStatus.QUEUED

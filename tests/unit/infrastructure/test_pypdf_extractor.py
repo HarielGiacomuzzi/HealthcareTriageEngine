@@ -1,10 +1,13 @@
 """The pypdf adapter needs no container, so it stays in the default run rather than
 living under `tests/adapters/` where the whole directory is marked `slow`."""
 
+import time
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 from prometheus_client import REGISTRY
+from pypdf import PdfReader
 from scripts.make_fixtures import build_all
 
 from ecet.application.errors import ExtractionFailed
@@ -73,3 +76,20 @@ async def test_extraction_is_timed(pdfs: dict[str, Path]) -> None:
     await PypdfTextExtractor(max_pages=50).extract(read(pdfs, "note_simple"))
 
     assert sample("ecet_pdf_extract_seconds_count") == before + 1
+
+
+async def test_a_five_page_note_extracts_within_the_soft_budget(pdfs: dict[str, Path]) -> None:
+    """pdf-text-extractor spec: a 5-page fixture extracts in under 200 ms. Best of three,
+    so a cold import or a noisy CI neighbour does not fail the build — a real regression
+    is slow every time."""
+    data = read(pdfs, "note_five_pages")
+    assert len(PdfReader(BytesIO(data)).pages) == 5
+    extractor = PypdfTextExtractor(max_pages=50)
+
+    timings: list[float] = []
+    for _ in range(3):
+        started = time.perf_counter()
+        await extractor.extract(data)
+        timings.append(time.perf_counter() - started)
+
+    assert min(timings) < 0.2, f"best of three took {min(timings) * 1000:.0f} ms"

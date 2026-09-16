@@ -15,13 +15,14 @@ from tests.fakes import (
 from tests.pii import assert_no_pii
 
 from ecet.application.errors import (
+    ClaimNotYetQueued,
     LLMInvalidOutput,
     LLMPermanentError,
     LLMTransientError,
     WebhookPermanentError,
 )
 from ecet.application.messages import EvaluationMessage, PolicySnapshot
-from ecet.application.use_cases.evaluate_claim import EvaluateClaim
+from ecet.application.use_cases.evaluate_claim import NOT_YET_QUEUED_DELAY_S, EvaluateClaim
 from ecet.domain.claim import Claim, ClaimStatus, RedactedText, SourceObject
 from ecet.domain.evaluation import (
     CheckOutcome,
@@ -250,6 +251,32 @@ async def test_a_redelivered_message_for_an_evaluated_claim_calls_no_gateway() -
     case, uow, claim, llm, webhook = await build_world(claim=claim)
 
     await case.execute(build_message(claim))
+
+    assert llm.requests == []
+    assert webhook.deliveries == []
+    assert uow.claims.saved == []
+
+
+async def test_a_message_that_beats_the_api_s_queued_commit_is_requeued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UC-01 publishes, then commits `QUEUED`. A worker fast enough to read the claim in
+    between sees `POLICIES_ATTACHED`; acking that as a duplicate strands the claim in
+    `QUEUED` with no message left (found by the E2E suite)."""
+    claim = build_claim(status=ClaimStatus.POLICIES_ATTACHED)
+    case, uow, claim, llm, webhook = await build_world(claim=claim)
+    holds: list[tuple[float, bool]] = []
+
+    async def spy_sleep(seconds: float) -> None:
+        holds.append((seconds, uow.active))
+
+    monkeypatch.setattr("ecet.application.use_cases.evaluate_claim.asyncio.sleep", spy_sleep)
+
+    with pytest.raises(ClaimNotYetQueued):
+        await case.execute(build_message(claim))
+
+    # Held once, for the configured delay, with the read unit of work already closed.
+    assert holds == [(NOT_YET_QUEUED_DELAY_S, False)]
 
     assert llm.requests == []
     assert webhook.deliveries == []
