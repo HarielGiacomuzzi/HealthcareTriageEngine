@@ -83,6 +83,12 @@ class FakeClaimRepository:
             :limit
         ]
 
+    async def count_by_status(self) -> dict[ClaimStatus, int]:
+        counts: dict[ClaimStatus, int] = {}
+        for claim in self.claims.values():
+            counts[claim.status] = counts.get(claim.status, 0) + 1
+        return counts
+
 
 class FakePolicyRepository:
     def __init__(self, policies: Iterable[Policy] = ()) -> None:
@@ -152,6 +158,13 @@ class FakeReviewTaskRepository:
 
     async def save(self, task: ReviewTask) -> None:
         self.tasks[task.id] = task
+
+    async def count_open_by_tenant(self) -> dict[TenantId, int]:
+        counts: dict[TenantId, int] = {}
+        for task in self.tasks.values():
+            if task.status is ReviewStatus.OPEN:
+                counts[task.tenant_id] = counts.get(task.tenant_id, 0) + 1
+        return counts
 
 
 class FakeIcd10CodeRepository:

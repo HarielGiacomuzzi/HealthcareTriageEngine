@@ -17,7 +17,7 @@ from ecet.domain.errors import (
     ReviewTaskNotFound,
     TenantNotFound,
 )
-from ecet.domain.evaluation import ReviewReason, ReviewStatus, ReviewTask
+from ecet.domain.evaluation import Decision, ReviewReason, ReviewStatus, ReviewTask
 from ecet.domain.ids import ClaimId, PolicyId, TenantId
 from ecet.domain.policy import Icd10Code, Policy
 from ecet.domain.ports.claim_repository import ClaimRepository
@@ -44,6 +44,18 @@ def build_claim(status: ClaimStatus = ClaimStatus.RECEIVED) -> Claim:
         created_at=NOW,
         updated_at=NOW,
     )
+
+
+def build_task(**overrides: object) -> ReviewTask:
+    fields: dict[str, object] = {
+        "id": uuid4(),
+        "claim_id": ClaimId(uuid4()),
+        "tenant_id": TENANT,
+        "reason": ReviewReason.LOW_CONFIDENCE,
+        "created_at": NOW,
+    }
+    fields.update(overrides)
+    return ReviewTask.model_validate(fields)
 
 
 def build_policy(**overrides: object) -> Policy:
@@ -234,3 +246,30 @@ async def test_review_task_repository_finds_a_claims_task_in_any_status() -> Non
 
     assert await repo.find_by_claim(claim_id) == task
     assert await repo.find_by_claim(ClaimId(uuid4())) is None
+
+
+async def test_claim_repository_counts_by_status() -> None:
+    repo = FakeClaimRepository()
+    await repo.add(build_claim(status=ClaimStatus.QUEUED))
+    await repo.add(build_claim(status=ClaimStatus.QUEUED))
+    await repo.add(build_claim(status=ClaimStatus.REVIEW_PENDING))
+
+    counts = await repo.count_by_status()
+
+    assert counts[ClaimStatus.QUEUED] == 2
+    assert counts[ClaimStatus.REVIEW_PENDING] == 1
+    assert ClaimStatus.APPROVED_AUTO not in counts  # zero rows means no key
+
+
+async def test_review_task_repository_counts_open_tasks_per_tenant() -> None:
+    repo = FakeReviewTaskRepository()
+    await repo.add(build_task(tenant_id=TenantId("tenant-a")))
+    await repo.add(build_task(tenant_id=TenantId("tenant-a")))
+    await repo.add(build_task(tenant_id=TenantId("tenant-b")))
+    resolved = build_task(tenant_id=TenantId("tenant-b"))
+    resolved.resolve(resolution=Decision.MEETS_NECESSITY, reviewer="r", notes=None, now=NOW)
+    await repo.add(resolved)
+
+    counts = await repo.count_open_by_tenant()
+
+    assert counts == {TenantId("tenant-a"): 2, TenantId("tenant-b"): 1}

@@ -5,8 +5,12 @@ about. The container is injected so nothing here opens a database or a broker â€
 import asyncio
 import os
 import signal
+from collections.abc import Callable
 from typing import Any, cast
 
+from tests.fakes import FakeUnitOfWork
+
+from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.config import Settings
 from ecet.interfaces.worker.container import WorkerContainer
 from ecet.interfaces.worker.main import run
@@ -20,12 +24,18 @@ class _StubConsumer:
         self.started += 1
 
 
-def build_container(settings: Settings, consumer: _StubConsumer) -> WorkerContainer:
+def build_container(
+    settings: Settings,
+    consumer: _StubConsumer,
+    *,
+    uow_factory: Callable[[], UnitOfWork] | None = None,
+) -> WorkerContainer:
     async def aclose() -> None:  # pragma: no cover - `run` never closes an injected one
         raise AssertionError("run() must not close a container it did not build")
 
     return WorkerContainer(
         settings=settings,
+        uow_factory=uow_factory if uow_factory is not None else FakeUnitOfWork,
         evaluate=cast(Any, None),
         consumer=cast(Any, consumer),
         aclose=aclose,
@@ -60,3 +70,15 @@ async def test_sigterm_stops_the_worker(settings: Settings) -> None:
 
     await asyncio.wait_for(task, timeout=1)
     assert task.done()
+
+
+async def test_the_gauge_refresher_runs_and_stops_with_the_worker(settings: Settings) -> None:
+    uow = FakeUnitOfWork()
+    stop = asyncio.Event()
+    container = build_container(settings, _StubConsumer(), uow_factory=lambda: uow)
+    task = asyncio.create_task(run(settings, stop, container))
+    await asyncio.sleep(0)
+
+    stop.set()
+
+    await asyncio.wait_for(task, timeout=1)

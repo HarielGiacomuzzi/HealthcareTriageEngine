@@ -8,6 +8,7 @@ import structlog
 
 from ecet.config import Settings
 from ecet.interfaces.worker.container import WorkerContainer, build_container
+from ecet.interfaces.worker.gauges import run_refresher
 
 log = structlog.get_logger(__name__)
 
@@ -28,10 +29,12 @@ async def run(
 
     built = container if container is not None else await build_container(settings)
     await built.consumer.start()
+    gauges_task = asyncio.create_task(run_refresher(built.uow_factory, stop))
     log.info("worker.started", env=settings.env, prefetch=settings.worker_prefetch)
     try:
         await stop.wait()
     finally:
+        await gauges_task  # `stop` is set: it returns on the next loop check
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError, ValueError):
                 loop.remove_signal_handler(sig)

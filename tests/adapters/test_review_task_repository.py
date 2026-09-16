@@ -203,3 +203,26 @@ async def test_find_by_claim_returns_a_resolved_task_too(
     assert found.id == task.id
     assert found.status is ReviewStatus.RESOLVED
     assert found.resolution is Decision.DOES_NOT_MEET
+
+
+async def test_count_open_by_tenant_ignores_resolved_tasks(
+    session_factory: async_sessionmaker[AsyncSession], claim: Claim
+) -> None:
+    resolved_claim = build_claim(suffix="b")
+    async with session_factory() as session:
+        await insert_claim(session, resolved_claim)
+        await session.commit()
+
+    open_task = build_task(claim)
+    resolved_task = build_task(resolved_claim)
+    resolved_task.resolve(resolution=Decision.MEETS_NECESSITY, reviewer="r", notes=None, now=NOW)
+    async with session_factory() as session:
+        repository = PostgresReviewTaskRepository(session)
+        await repository.add(open_task)
+        await repository.add(resolved_task)
+        await session.commit()
+
+    async with session_factory() as session:
+        counts = await PostgresReviewTaskRepository(session).count_open_by_tenant()
+
+    assert counts == {TenantId(claim.tenant_id): 1}

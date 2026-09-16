@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import insert, or_, select, update
+from sqlalchemy import func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ecet.domain.claim import Claim, ClaimStatus
@@ -166,6 +166,11 @@ class PostgresClaimRepository:
         rows = (await self._session.scalars(statement)).all()
         return [self._track(claim_from_row(row)) for row in rows]
 
+    async def count_by_status(self) -> dict[ClaimStatus, int]:
+        statement = select(ClaimRow.status, func.count()).group_by(ClaimRow.status)
+        rows = (await self._session.execute(statement)).all()
+        return {ClaimStatus(status): count for status, count in rows}
+
 
 class PostgresReviewTaskRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -234,3 +239,12 @@ class PostgresReviewTaskRepository:
             if row is None:
                 raise ReviewTaskNotFound(str(task.id))
             raise ReviewAlreadyResolved(str(task.id))
+
+    async def count_open_by_tenant(self) -> dict[TenantId, int]:
+        statement = (
+            select(ReviewTaskRow.tenant_id, func.count())
+            .where(ReviewTaskRow.status == ReviewStatus.OPEN.value)
+            .group_by(ReviewTaskRow.tenant_id)
+        )
+        rows = (await self._session.execute(statement)).all()
+        return {TenantId(tenant_id): count for tenant_id, count in rows}

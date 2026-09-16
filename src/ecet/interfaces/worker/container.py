@@ -32,6 +32,7 @@ log = structlog.get_logger(__name__)
 @dataclass
 class WorkerContainer:
     settings: Settings
+    uow_factory: Callable[[], UnitOfWork]
     evaluate: EvaluateClaim
     consumer: RabbitMqConsumer
     aclose: Callable[[], Awaitable[None]]
@@ -91,4 +92,10 @@ async def build_container(settings: Settings) -> WorkerContainer:
         threshold=settings.confidence_threshold,
         prefetch=settings.worker_prefetch,
     )
-    return WorkerContainer(settings=settings, evaluate=evaluate, consumer=consumer, aclose=aclose)
+    return WorkerContainer(
+        settings=settings,
+        uow_factory=uow_factory,
+        evaluate=evaluate,
+        consumer=consumer,
+        aclose=aclose,
+    )
