@@ -100,6 +100,7 @@ async def test_an_excluded_code_is_rejected_without_calling_the_llm() -> None:
     assert task["reason"] == "DETERMINISTIC_REJECT"
     assert task["evaluation"] is None
     assert not [r for r in log_records("worker") if r.get("claim_id") == claim_id]
+    assert_no_pii(json.dumps(task))
 
 
 async def test_a_tenant_without_policies_records_no_policies_and_notifies_no_one() -> None:
@@ -111,6 +112,7 @@ async def test_a_tenant_without_policies_records_no_policies_and_notifies_no_one
     )
     assert row["failure_reason"] == "no_policies"
     assert await deliveries_for(key) == []
+    assert_no_pii(json.dumps(row, default=str))
 
 
 async def test_one_request_id_follows_a_claim_from_the_api_into_the_worker() -> None:
@@ -129,6 +131,7 @@ async def test_one_request_id_follows_a_claim_from_the_api_into_the_worker() -> 
         }
 
     assert request_ids("api") & request_ids("worker")
+    assert_no_pii(json.dumps(delivery))
 
 
 async def test_both_processes_expose_the_pipeline_metrics() -> None:
