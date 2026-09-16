@@ -98,3 +98,18 @@ def test_the_default_stack_never_calls_a_real_vendor(compose: dict[str, Any]) ->
     assert "ECET_LLM_PROVIDER=fake" in example
     for service in ("api", "worker"):
         assert "ECET_LLM_PROVIDER" not in compose["services"][service].get("environment", {})
+
+
+def test_the_worker_has_a_healthcheck_against_its_metrics_port(compose: dict[str, Any]) -> None:
+    """Phase 0 carry-over #5: the worker had no healthcheck because it had nothing to
+    probe. `/metrics` on 9100 is that something."""
+    probe = " ".join(compose["services"]["worker"]["healthcheck"]["test"])
+
+    assert "9100" in probe
+    assert "/metrics" in probe
+
+
+def test_the_worker_metrics_port_is_not_published(compose: dict[str, Any]) -> None:
+    """Scraped from inside the compose network; publishing it to the host is one more
+    listening socket for nothing."""
+    assert "ports" not in compose["services"]["worker"]

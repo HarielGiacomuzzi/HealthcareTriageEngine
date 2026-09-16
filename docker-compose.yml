@@ -130,6 +130,19 @@ services:
         condition: service_healthy
       mock-client:
         condition: service_healthy
+    healthcheck:
+      # The worker serves `/metrics` on 9100 (ECET_METRICS_PORT). It is the only socket
+      # the worker listens on, and a worker whose event loop is wedged stops answering
+      # it — which is exactly what "unhealthy" should mean here.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:9100/metrics')"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     deploy:
       resources:
         limits:

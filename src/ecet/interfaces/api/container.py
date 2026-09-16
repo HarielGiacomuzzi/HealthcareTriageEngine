@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import structlog
 from sqlalchemy import text
 
+from ecet import metrics
 from ecet.application.ports.object_storage import ObjectStorage
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.redaction_policy import (
@@ -64,6 +65,11 @@ async def _noop() -> None:
 
 async def build_container(settings: Settings) -> ApiContainer:
     engine = create_engine(settings.database_url.get_secret_value())
+    # The api's `/metrics` is mounted in `create_app`; this is the gauge behind it that
+    # shows a connection held across an external call.
+    metrics.DB_POOL_IN_USE.set_function(
+        engine.pool.checkedout  # type: ignore[attr-defined]  # QueuePool, the engine default
+    )
 
     if settings.auto_migrate:
         # Compose-only. Phase 2 shipped the migration and the seed but wired neither
