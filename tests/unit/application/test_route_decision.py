@@ -170,6 +170,7 @@ async def test_a_tenant_deactivated_before_delivery_parks_the_claim() -> None:
     assert claim.status is ClaimStatus.NOTIFY_FAILED
     assert claim.failure_reason == "tenant_inactive"
     assert claim.last_notify_error is not None
+    assert claim.notification_attempts == 0  # nothing left the process
     assert uow.review_tasks.tasks == {}
     assert uow.claims.saved == [claim.id]
 

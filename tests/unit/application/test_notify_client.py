@@ -241,6 +241,18 @@ def test_a_deactivated_tenant_is_a_delivery_that_never_happened() -> None:
     assert not delivery.succeeded
 
 
+def test_a_deactivated_tenant_does_not_count_as_an_attempt() -> None:
+    """`notification_attempts` counts the times the system tried to tell the client;
+    a tenant deactivated before delivery means nothing left the process."""
+    claim = build_claim()
+    before = claim.notification_attempts
+
+    tenant_inactive(TenantNotFound("tenant-a")).apply_to(claim)
+
+    assert claim.notification_attempts == before
+    assert claim.last_notify_error is not None
+
+
 async def test_attempt_returns_a_successful_delivery_when_the_webhook_is_delivered() -> None:
     webhook = FakeWebhookClient()
 

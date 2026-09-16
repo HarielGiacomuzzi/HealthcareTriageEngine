@@ -37,24 +37,34 @@ class Delivery:
     The claim is not mutated here: the caller delivers *outside* its unit of work and
     then saves a claim it re-read inside a second one, so the fields have to be
     applied to that object, not to the one the payload was built from.
+
+    `attempted` is `False` only for a tenant deactivated before delivery: nothing left
+    the process, and `notification_attempts` counts the times the system *tried* to
+    tell the client, not every reason a claim can park.
     """
 
     failure_reason: str | None
     error: str | None
+    attempted: bool = True
 
     @property
     def succeeded(self) -> bool:
         return self.failure_reason is None
 
     def apply_to(self, claim: Claim) -> None:
-        claim.notification_attempts += 1
+        if self.attempted:
+            claim.notification_attempts += 1
         claim.last_notify_error = self.error
 
 
 def tenant_inactive(error: TenantNotFound) -> Delivery:
     """A tenant deactivated since the claim was ingested. Nothing was sent, and the
     claim parks under the same token as any other undelivered decision."""
-    return Delivery(failure_reason=TENANT_INACTIVE, error=f"{type(error).__name__}: {error}")
+    return Delivery(
+        failure_reason=TENANT_INACTIVE,
+        error=f"{type(error).__name__}: {error}",
+        attempted=False,
+    )
 
 
 class NotifyClient:

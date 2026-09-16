@@ -20,7 +20,7 @@ from ecet.application.ports.clock import Clock
 from ecet.application.ports.unit_of_work import UnitOfWork
 from ecet.application.ports.webhook_client import WebhookClient
 from ecet.application.use_cases.human_review import RequestHumanReview
-from ecet.application.use_cases.notify_client import UNREACHABLE, NotifyClient, tenant_inactive
+from ecet.application.use_cases.notify_client import NotifyClient, tenant_inactive
 from ecet.domain.claim import Claim, ClaimStatus
 from ecet.domain.errors import TenantNotFound
 from ecet.domain.evaluation import ReviewReason, Route, Verdict, triage
@@ -79,7 +79,10 @@ class RouteDecision:
             if delivery.succeeded:
                 self._advance(claim, ClaimStatus.APPROVED_AUTO)
             else:
-                self._fail(claim, delivery.failure_reason or UNREACHABLE)
+                # `succeeded` is `failure_reason is None`, so the `else` branch always
+                # has one; the fallback is only to satisfy the `str | None` type.
+                assert delivery.failure_reason is not None
+                self._fail(claim, delivery.failure_reason)
 
         await self._uow.claims.save(claim)
 
