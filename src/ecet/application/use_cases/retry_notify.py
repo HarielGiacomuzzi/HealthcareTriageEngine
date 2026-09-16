@@ -65,6 +65,22 @@ class RetryNotify:
 
         async with self._uow_factory() as uow:  # the write
             claim = await uow.claims.get(claim_id)
+            if claim.status is not ClaimStatus.NOTIFY_FAILED:
+                # Something else moved the claim while the POST above was in flight
+                # (another retry, another operator, a worker). That request's write
+                # stands; this one's does not, but its delivery already reached the
+                # client, so the loss is logged rather than written over silently.
+                log.warning(
+                    "notify.retry_lost_race",
+                    claim_id=str(claim.id),
+                    tenant_id=str(claim.tenant_id),
+                    status=claim.status.value,
+                    delivery_attempted=delivery.attempted,
+                    delivery_succeeded=delivery.succeeded,
+                )
+                raise InvalidTransition(
+                    f"claim {claim.id} moved to {claim.status} while its retry was in flight"
+                )
             now = self._clock.now()
             delivery.apply_to(claim)
             if delivery.succeeded:

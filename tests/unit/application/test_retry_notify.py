@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+import structlog.testing
 from tests.fakes import FakeUnitOfWork, FakeWebhookClient, FixedClock
 from tests.pii import assert_no_pii
 
@@ -76,8 +77,8 @@ def build_retry(uow: FakeUnitOfWork, *, webhook: FakeWebhookClient) -> RetryNoti
     return RetryNotify(uow_factory=lambda: uow, webhook=webhook, clock=FixedClock(LATER))
 
 
-async def seed_notify_failed_claim(uow: FakeUnitOfWork) -> Claim:
-    claim = build_claim()
+async def seed_notify_failed_claim(uow: FakeUnitOfWork, **overrides: Any) -> Claim:
+    claim = build_claim(**overrides)
     await uow.claims.add(claim)
     return claim
 
@@ -203,7 +204,9 @@ async def test_the_retry_posts_with_no_transaction_open() -> None:
 async def test_a_second_failure_still_commits_the_attempt_count() -> None:
     uow = FakeUnitOfWork(tenants=[build_tenant()])
     webhook = FakeWebhookClient(error=WebhookTransientError("still refused"))
-    claim = await seed_notify_failed_claim(uow)
+    # Seeded with a different failure token than the one under test, so the assertion
+    # below fails if the write branch that sets it were deleted.
+    claim = await seed_notify_failed_claim(uow, failure_reason="webhook_rejected")
 
     result = await build_retry(uow, webhook=webhook).execute(claim.id)
 
@@ -212,6 +215,56 @@ async def test_a_second_failure_still_commits_the_attempt_count() -> None:
     assert stored.notification_attempts == claim.notification_attempts + 1
     assert stored.failure_reason == UNREACHABLE
     assert uow.commits == 1
+
+
+class RacingWebhook(FakeWebhookClient):
+    """Moves the stored claim to `APPROVED_AUTO` from under the retry while its POST
+    is in flight — another operator's retry, a second retry from a double-click, or a
+    worker, touching the same claim before this request's write lands."""
+
+    def __init__(self, uow: FakeUnitOfWork, claim_id: ClaimId, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._uow = uow
+        self._claim_id = claim_id
+
+    async def deliver(self, tenant: Tenant, payload: Any) -> None:
+        stored = self._uow.claims.claims[self._claim_id]
+        self._uow.claims.claims[self._claim_id] = stored.model_copy(
+            update={"status": ClaimStatus.APPROVED_AUTO, "failure_reason": None}
+        )
+        await super().deliver(tenant, payload)
+
+
+async def test_a_retry_that_moved_while_failing_again_is_not_written() -> None:
+    uow = FakeUnitOfWork(tenants=[build_tenant()])
+    claim = await seed_notify_failed_claim(uow)
+    webhook = RacingWebhook(uow, claim.id, error=WebhookTransientError("still refused"))
+
+    with structlog.testing.capture_logs() as captured, pytest.raises(InvalidTransition):
+        await build_retry(uow, webhook=webhook).execute(claim.id)
+
+    # The winner's write stands untouched: no stamping a delivery-failure reason onto
+    # a claim that already moved past NOTIFY_FAILED, and no commit.
+    stored = uow.claims.claims[claim.id]
+    assert stored.status is ClaimStatus.APPROVED_AUTO
+    assert stored.failure_reason is None
+    assert stored.notification_attempts == claim.notification_attempts
+    assert uow.commits == 0
+    assert any(entry.get("event") == "notify.retry_lost_race" for entry in captured)
+
+
+async def test_a_retry_that_moved_while_succeeding_is_not_written() -> None:
+    uow = FakeUnitOfWork(tenants=[build_tenant()])
+    claim = await seed_notify_failed_claim(uow)
+    webhook = RacingWebhook(uow, claim.id)
+
+    with pytest.raises(InvalidTransition):
+        await build_retry(uow, webhook=webhook).execute(claim.id)
+
+    # The client already got the notification; only the write is refused, so the
+    # duplicate delivery is visible rather than silently repeated on the next retry.
+    assert len(webhook.deliveries) == 1
+    assert uow.commits == 0
 
 
 async def test_a_deactivated_tenant_parks_the_claim_without_a_delivery() -> None:
