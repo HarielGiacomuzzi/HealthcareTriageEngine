@@ -176,7 +176,12 @@ services:
           queue_limit=10000
         mc admin service restart local --json
         sleep 5
-        mc event add local/claims arn:minio:sqs::ecet:webhook --event put --suffix .pdf
+        # Idempotent: when `make up` re-runs this against an existing volume, a second
+        # `add` fails as overlapping. The mc image has no grep, hence `case`.
+        case "$$(mc event ls local/claims arn:minio:sqs::ecet:webhook)" in
+          *arn:minio:sqs::ecet:webhook*) ;;
+          *) mc event add local/claims arn:minio:sqs::ecet:webhook --event put --suffix .pdf ;;
+        esac
         echo "minio notifications wired"
     restart: "no"
 
