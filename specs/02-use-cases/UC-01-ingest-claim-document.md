@@ -55,6 +55,8 @@ class IngestResult(BaseModel):
 Steps 5–11 wrapped so any unexpected exception sets failure state + reason before re-raising.
 Publish (step 10) happens **after** DB commit of `POLICIES_ATTACHED`; if publish fails, status stays `POLICIES_ATTACHED` and a retry endpoint / sweeper can re-publish (outbox pattern deferred, see [roadmap](../06-roadmap.md#deferred-explicitly-out-of-v1)).
 
+No unit of work is open across the object read, the extraction, the redaction or the publish: UC-01 inserts and commits the `RECEIVED` claim, does that work with no connection held, re-reads the claim to attach policies, run the checks and commit, publishes, then re-reads it once more to mark it `QUEUED` — only if it is still `POLICIES_ATTACHED`, since a concurrent re-publish of the same object may already have done so.
+
 ## Errors → HTTP (mapped in [interfaces](../04-interfaces/api.md#error-mapping-errorspy))
 
 | Error               | HTTP |

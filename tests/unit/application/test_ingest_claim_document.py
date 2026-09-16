@@ -97,11 +97,12 @@ class Harness:
         self.storage = FakeObjectStorage({(BUCKET, KEY): PDF})
         self.extractor = extractor or FakeTextExtractor(read_note(note))
         self.queue = queue or FakeEvaluationQueue()
+        self.redactor = FakePiiRedactor()
         self.use_case = IngestClaimDocument(
             uow_factory=lambda: self.uow,
             storage=self.storage,
             extractor=self.extractor,
-            redact_pii=RedactPii(FakePiiRedactor()),
+            redact_pii=RedactPii(self.redactor),
             run_checks=RunDeterministicChecks(),
             enqueue=EnqueueEvaluation(self.queue, self.clock),
             clock=self.clock,
@@ -459,3 +460,66 @@ async def test_the_duplicate_check_runs_before_the_tenant_lookup() -> None:
 
     assert second.duplicate is True
     assert second.claim_id == first.claim_id
+
+
+def spy_on_unit_of_work(harness: Harness, target: object, method: str) -> list[bool]:
+    """Wrap `target.method` so each call records whether the unit of work was open.
+    An instance attribute shadows the class method, so the fake itself is unchanged."""
+    open_during_call: list[bool] = []
+    original = getattr(target, method)
+
+    async def recording(*args: Any, **kwargs: Any) -> Any:
+        open_during_call.append(harness.uow.active)
+        return await original(*args, **kwargs)
+
+    setattr(target, method, recording)
+    return open_during_call
+
+
+async def test_no_external_call_runs_inside_a_unit_of_work() -> None:
+    """The object read, pypdf, spaCy and the broker can each take seconds; none of them
+    may hold a pooled connection while they do (the Phase 6 fix, on the ingest side)."""
+    harness = Harness()
+    calls = {
+        "get_bytes": spy_on_unit_of_work(harness, harness.storage, "get_bytes"),
+        "extract": spy_on_unit_of_work(harness, harness.extractor, "extract"),
+        "redact": spy_on_unit_of_work(harness, harness.redactor, "redact"),
+        "publish": spy_on_unit_of_work(harness, harness.queue, "publish"),
+    }
+
+    result = await harness.ingest()
+
+    assert result.status is ClaimStatus.QUEUED
+    assert calls == {name: [False] for name in calls}
+
+
+async def test_a_re_publish_runs_outside_the_unit_of_work_too() -> None:
+    harness = Harness(queue=FakeEvaluationQueue(error=QueuePublishError("no confirm")))
+    with pytest.raises(QueuePublishError):
+        await harness.ingest()
+    harness.queue.error = None
+    publish_calls = spy_on_unit_of_work(harness, harness.queue, "publish")
+
+    result = await harness.ingest()
+
+    assert result.status is ClaimStatus.QUEUED
+    assert publish_calls == [False]
+
+
+async def test_a_claim_queued_by_a_concurrent_re_publish_is_not_an_error() -> None:
+    """Between UC-01's `POLICIES_ATTACHED` commit and its `QUEUED` write, the same object
+    arriving again can re-publish and mark the claim `QUEUED` first. The late writer
+    finds it already `QUEUED` and leaves it, instead of raising `InvalidTransition`."""
+    harness = Harness()
+
+    async def racing_publish(message: Any) -> None:
+        harness.queue.published.append(message)
+        stored = harness.uow.claims.claims[message.claim_id]
+        stored.transition(ClaimStatus.QUEUED, now=NOW)
+
+    harness.queue.publish = racing_publish  # type: ignore[method-assign]
+
+    result = await harness.ingest()
+
+    assert result.status is ClaimStatus.QUEUED
+    assert harness.uow.claims.claims[result.claim_id].status is ClaimStatus.QUEUED
