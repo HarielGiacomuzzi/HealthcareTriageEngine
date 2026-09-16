@@ -21,7 +21,9 @@ BODY = b"%PDF-1.7 not really a pdf, just bytes"
 @pytest.fixture(scope="session")
 def minio_endpoint() -> Iterator[str]:
     container = (
-        DockerContainer("minio/minio:RELEASE.2025-09-07T16-13-09Z")
+        # quay.io, not Docker Hub: the `minio/minio` Hub repository was removed upstream
+        # and pulls now fail with "repository does not exist". Same image, same digest.
+        DockerContainer("quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z")
         .with_command("server /data")
         .with_env("MINIO_ROOT_USER", "minioadmin")
         .with_env("MINIO_ROOT_PASSWORD", "minioadmin")
