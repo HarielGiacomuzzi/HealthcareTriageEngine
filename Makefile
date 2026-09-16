@@ -93,7 +93,15 @@ demo: fixtures up
 	@# `minio-setup` restarts MinIO to pick up the webhook target. Dropping before it
 	@# finishes either hits a refused connection or lands an object no event covers.
 	@echo "waiting for minio-setup to finish wiring notifications..."
-	@docker compose wait minio-setup
+	@# Not `docker compose wait`: it errors once the one-shot has exited, which on a cold
+	@# stack it has long before /readyz answers.
+	@for i in $$(seq 1 150); do \
+		STATE=$$(docker compose ps -a --format '{{.State}} {{.ExitCode}}' minio-setup); \
+		[ "$$STATE" = "exited 0" ] && break; \
+		case "$$STATE" in exited*) echo "minio-setup failed: $$STATE; try 'docker compose logs minio-setup'"; exit 1;; esac; \
+		[ $$i -eq 150 ] && { echo "minio-setup did not finish within 300s: $${STATE:-no container}"; exit 1; }; \
+		sleep 2; \
+	done
 	@# The mock client keeps every delivery it has ever received. Without this, a second
 	@# `make demo` without `make clean` leaves the previous run's delivery at `.[0]`.
 	@curl -sf -X DELETE localhost:8081/received >/dev/null
